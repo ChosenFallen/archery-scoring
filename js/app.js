@@ -258,7 +258,7 @@ function renderScore() {
   const tpl = ROUNDS[round.type];
   const st = roundStats(round);
   const settings = store.getSettings();
-  const mode = settings.defaultEntry;
+  const mode = settings.showTarget ? settings.defaultEntry : 'keypad';
   const endIdx = round.ends.length - 1;
   const end = currentEnd(round);
   const full = end.length >= tpl.arrowsPerEnd;
@@ -317,10 +317,10 @@ function renderScore() {
       </div>
       <div class="end-row">${slots}<div class="end-total"><small>End</small>${endTotal}</div></div>
       ${prevHtml}
-      <div class="mode-tabs">
+      ${settings.showTarget ? `<div class="mode-tabs">
         <button type="button" data-action="mode" data-m="keypad" class="${mode === 'keypad' ? 'on' : ''}">Keypad</button>
         <button type="button" data-action="mode" data-m="target" class="${mode === 'target' ? 'on' : ''}">Target</button>
-      </div>
+      </div>` : ''}
       <div class="entry mode-${mode}">${entry}</div>
       <div class="score-actions">
         <button type="button" class="btn" data-action="undo" ${st.arrows ? '' : 'disabled'}>Undo</button>
@@ -645,17 +645,20 @@ function renderStats() {
 
 function renderSettings() {
   const s = store.getSettings();
-  const opt = (map, value) => Object.entries(map).map(([k, l]) => `<option value="${k}" ${k === value ? 'selected' : ''}>${esc(l)}</option>`).join('');
   app.innerHTML = shell({
     title: 'Settings',
     body: `
       <div class="card form">
-        <label class="field"><span class="field-label">Default scoring method</span>
-          <select data-setting="defaultEntry">${opt({ keypad: 'Keypad', target: 'Tap on target' }, s.defaultEntry)}</select></label>
+        <label class="toggle">
+          <span><span class="field-label">Target face</span>
+            <small class="muted">Plot arrows by tapping on the target. When off, you score with the keypad only.</small></span>
+          <input type="checkbox" role="switch" data-setting="showTarget" ${s.showTarget ? 'checked' : ''}>
+        </label>
+        ${s.showTarget ? `
         <label class="field"><span class="field-label">Arrow shaft diameter (mm)</span>
           <input type="number" inputmode="decimal" step="0.1" min="3" max="12" value="${s.arrowDiameterMm}" data-setting="arrowDiameterMm"></label>
         <p class="muted small-print">Used when you tap on the target so an arrow touching a line scores the higher ring.
-          Shaft sizes like "2315" or "23" mean 23/64 inch, which is about 9.1mm.</p>
+          Shaft sizes like "2315" or "23" mean 23/64 inch, which is about 9.1mm.</p>` : ''}
       </div>
 
       <h2 class="section">Backup</h2>
@@ -767,12 +770,14 @@ document.addEventListener('change', async e => {
   const el = e.target;
   if (el.dataset.setting) {
     const key = el.dataset.setting;
-    let value = el.value;
+    let value = el.type === 'checkbox' ? el.checked : el.value;
     if (key === 'arrowDiameterMm') {
       value = Number(value);
       if (!(value >= 3 && value <= 12)) { toast('Enter a diameter between 3 and 12mm'); return; }
     }
     store.updateSettings({ [key]: value });
+    // The shaft diameter field only shows while the target face is on.
+    if (key === 'showTarget') render();
     toast('Saved');
     return;
   }

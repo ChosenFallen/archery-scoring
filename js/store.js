@@ -7,6 +7,7 @@ const DEFAULT_SETTINGS = {
   defaultBow: 'recurve',
   defaultFace: 'full40',
   defaultEntry: 'keypad',
+  showTarget: true,
 };
 
 let data = load();
