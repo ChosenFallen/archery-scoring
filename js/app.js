@@ -1,6 +1,6 @@
 import {
   ROUNDS, BOWS, FACES, hasX, allowedLabels, sortArrows, labelClass, rulesHint,
-  roundStats, compareScores, configKey, describeConfig,
+  roundStats, compareScores, configKey, describeConfig, archerOf,
 } from './rules.js';
 import * as store from './store.js';
 import {
@@ -12,7 +12,10 @@ const TOUCH_OFFSET_PX = 56;
 
 const app = document.getElementById('app');
 const modal = document.getElementById('modal');
-const ui = { editing: null, justFinished: null, historyFilter: 'all', statsConfig: null };
+const ui = {
+  editing: null, restoring: false, justFinished: new Set(),
+  historyFilter: 'all', statsArcher: null, statsConfig: null, newArchers: null,
+};
 
 // ---------- helpers ----------
 
@@ -68,6 +71,10 @@ function keypadHTML(labels, action, disabled = false) {
 }
 const go = hash => { location.hash = hash; };
 
+const nameOf = r => store.archerName(archerOf(r));
+// Names are only shown once more than one archer has been used, so a solo archer sees no change.
+const showNames = () => store.getPeople().length > 0 || store.getRounds().some(r => archerOf(r) !== store.ME);
+
 function currentEnd(round) { return round.ends[round.ends.length - 1]; }
 const singleSpotEntry = round => round.face === 'triple40';
 function endIsFull(round) { return currentEnd(round).length >= ROUNDS[round.type].arrowsPerEnd; }
@@ -116,18 +123,26 @@ function render() {
   renderModal();
 }
 
-window.addEventListener('hashchange', () => { ui.editing = null; ui.restoring = false; render(); window.scrollTo(0, 0); });
+window.addEventListener('hashchange', () => {
+  ui.editing = null;
+  ui.restoring = false;
+  // Start each visit to the new round screen from the remembered archers.
+  if (parseRoute().name !== 'new') ui.newArchers = null;
+  render();
+  window.scrollTo(0, 0);
+});
 
 // ---------- shared pieces ----------
 
 function roundRow(r) {
   const st = roundStats(r);
   const status = r.finishedAt ? '' : '<span class="badge">In progress</span>';
+  const named = showNames();
   return `
     <a class="round-row" href="#/round/${r.id}">
       <div>
-        <div class="rr-date">${esc(fmtDate(r.date))} ${status}</div>
-        <div class="rr-config">${esc(describeConfig(r))}${r.location ? ' · ' + esc(r.location) : ''}</div>
+        <div class="rr-date">${esc(named ? nameOf(r) : fmtDate(r.date))} ${status}</div>
+        <div class="rr-config">${named ? esc(fmtDate(r.date)) + ' · ' : ''}${esc(describeConfig(r))}${r.location ? ' · ' + esc(r.location) : ''}</div>
       </div>
       <div class="rr-score">
         <b>${st.total}</b><small>/${st.maxScore}</small>
@@ -156,23 +171,31 @@ function isPersonalBest(round) {
 
 function renderHome() {
   const rounds = store.getRounds();
-  const active = rounds.filter(r => !r.finishedAt);
   const recent = rounds.filter(r => r.finishedAt).slice(0, 5);
   const best = [...bestByConfig(rounds).values()];
+  const named = showNames();
 
-  const activeHtml = active.map(r => {
-    const st = roundStats(r);
+  // One card per in-progress session, listing every archer in it.
+  const seen = new Set();
+  const sessions = [];
+  for (const r of rounds) {
+    if (r.finishedAt || seen.has(r.groupId || r.id)) continue;
+    seen.add(r.groupId || r.id);
+    sessions.push(store.getGroup(r).filter(g => !g.finishedAt));
+  }
+
+  const activeHtml = sessions.map(group => {
+    const first = group[0];
+    const lines = group.map(r => {
+      const st = roundStats(r);
+      return `<div class="active-archer"><span>${named ? `<b>${esc(nameOf(r))}</b> · ` : ''}${esc(describeConfig(r))}</span><b class="${group.length > 1 ? '' : 'big-num'}">${st.total}</b></div>`;
+    }).join('');
     return `
       <div class="card active-card">
         <div class="card-label">Round in progress</div>
-        <div class="active-main">
-          <div>
-            <div class="rr-config">${esc(describeConfig(r))}</div>
-            <div class="muted">${esc(fmtDate(r.date))} · End ${r.ends.length} of ${ROUNDS[r.type].ends}</div>
-          </div>
-          <div class="big-num">${st.total}</div>
-        </div>
-        <a class="btn primary block" href="#/score/${r.id}">Resume scoring</a>
+        <div class="muted">${esc(fmtDate(first.date))} · End ${first.ends.length} of ${ROUNDS[first.type].ends}</div>
+        <div class="active-list">${lines}</div>
+        <a class="btn primary block" href="#/score/${first.id}">Resume scoring</a>
       </div>`;
   }).join('');
 
@@ -180,7 +203,7 @@ function renderHome() {
     <h2 class="section">Personal bests</h2>
     <div class="card list">${best.map(({ r, st }) => `
       <a class="pb-row" href="#/round/${r.id}">
-        <span>${esc(describeConfig(r))}</span>
+        <span>${named ? `<b>${esc(nameOf(r))}</b> · ` : ''}${esc(describeConfig(r))}</span>
         <span><b>${st.total}</b> <small class="muted">${st.tens}×10${hasX(r.bow) ? ` ${st.xs}X` : ''}</small></span>
       </a>`).join('')}</div>` : '';
 
@@ -202,12 +225,54 @@ function renderHome() {
 
 // ---------- new round ----------
 
-function renderNew() {
+// Each archer row is { who: 'me' | person id | 'new', newName, bow, face }.
+function defaultArchers() {
   const s = store.getSettings();
-  const seg = (name, options, value) => `
-    <div class="segmented">${Object.entries(options).map(([k, label]) => `
-      <label><input type="radio" name="${name}" value="${k}" ${k === value ? 'checked' : ''}><span>${esc(label)}</span></label>`).join('')}
-    </div>`;
+  const people = new Set(store.getPeople().map(p => p.id));
+  const seen = new Set();
+  const last = (s.lastArchers || []).filter(a =>
+    (a.who === store.ME || people.has(a.who)) && !seen.has(a.who) && seen.add(a.who));
+  return last.length
+    ? last.map(a => ({ ...a, newName: '' }))
+    : [{ who: store.ME, newName: '', bow: s.defaultBow, face: s.defaultFace }];
+}
+
+function archerRowsHTML() {
+  const rows = ui.newArchers;
+  const myName = store.getSettings().myName;
+  const people = store.getPeople();
+  const opt = (map, value) => Object.entries(map).map(([k, l]) => `<option value="${k}" ${k === value ? 'selected' : ''}>${esc(l)}</option>`).join('');
+  return rows.map((a, i) => {
+    const taken = new Set(rows.filter((_, j) => j !== i).map(x => x.who));
+    const choice = (id, label) => `<option value="${id}" ${a.who === id ? 'selected' : ''} ${taken.has(id) ? 'disabled' : ''}>${esc(label)}</option>`;
+    return `
+      <div class="archer-row" data-row="${i}">
+        <div class="archer-top">
+          <span class="archer-no">${i + 1}</span>
+          <select data-arch="who" aria-label="Archer ${i + 1}">
+            ${choice(store.ME, myName ? `${myName} (me)` : 'Me')}
+            ${people.map(p => choice(p.id, p.name)).join('')}
+            <option value="new" ${a.who === 'new' ? 'selected' : ''}>+ New person…</option>
+          </select>
+          ${rows.length > 1 ? `<button type="button" class="icon-btn remove" data-action="archer-remove" data-i="${i}" aria-label="Remove archer ${i + 1}">✕</button>` : ''}
+        </div>
+        ${a.who === 'new' ? `<input type="text" data-arch="newName" value="${esc(a.newName)}" placeholder="Their name" maxlength="40" autocomplete="off">` : ''}
+        <div class="archer-opts">
+          <select data-arch="bow" aria-label="Bow">${opt(BOWS, a.bow)}</select>
+          <select data-arch="face" aria-label="Target face">${opt(FACES, a.face)}</select>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+function rulesHintHTML() {
+  // Rules for every bow and face in use, without repeating the same line.
+  const lines = [...new Set(ui.newArchers.flatMap(a => rulesHint(a.bow, a.face)))];
+  return lines.map(p => `<p>${esc(p)}</p>`).join('');
+}
+
+function renderNew() {
+  if (!ui.newArchers) ui.newArchers = defaultArchers();
 
   app.innerHTML = shell({
     title: 'New round',
@@ -219,9 +284,12 @@ function renderNew() {
           <span class="field-label">Round</span>
           <select name="type">${Object.values(ROUNDS).map(t => `<option value="${t.id}">${esc(t.name)} · ${t.ends * t.arrowsPerEnd} arrows</option>`).join('')}</select>
         </div>
-        <div class="field"><span class="field-label">Bow</span>${seg('bow', BOWS, s.defaultBow)}</div>
-        <div class="field"><span class="field-label">Target face</span>${seg('face', FACES, s.defaultFace)}</div>
-        <div class="card hint" id="rules-hint"></div>
+        <div class="field">
+          <span class="field-label">Archers</span>
+          <div id="archers" class="archers">${archerRowsHTML()}</div>
+          <button type="button" class="btn block" data-action="archer-add">+ Add archer</button>
+        </div>
+        <div class="card hint" id="rules-hint">${rulesHintHTML()}</div>
         <label class="field"><span class="field-label">Date</span><input type="date" name="date" value="${today()}" required></label>
         <label class="field"><span class="field-label">Location <small>(optional)</small></span><input type="text" name="location" placeholder="e.g. Club range" maxlength="80"></label>
         <label class="field"><span class="field-label">Notes <small>(optional)</small></span><textarea name="notes" rows="2" placeholder="Equipment, conditions, goals…" maxlength="500"></textarea></label>
@@ -230,32 +298,54 @@ function renderNew() {
   });
 
   const form = $('#new-form');
-  const updateHint = () => {
-    const f = new FormData(form);
-    $('#rules-hint').innerHTML = rulesHint(f.get('bow'), f.get('face')).map(p => `<p>${esc(p)}</p>`).join('');
+  const archers = $('#archers');
+
+  const onArcherInput = e => {
+    const el = e.target;
+    const row = el.closest('[data-row]');
+    if (!row || !el.dataset.arch) return;
+    ui.newArchers[Number(row.dataset.row)][el.dataset.arch] = el.value;
+    // Picking "New person" adds a name box, and other rows' choices change, so redraw the rows.
+    if (el.dataset.arch === 'who' && e.type === 'change') {
+      archers.innerHTML = archerRowsHTML();
+      if (el.value === 'new') archers.querySelector(`[data-row="${row.dataset.row}"] [data-arch="newName"]`)?.focus();
+    }
+    $('#rules-hint').innerHTML = rulesHintHTML();
   };
-  form.addEventListener('change', updateHint);
-  updateHint();
+  archers.addEventListener('change', onArcherInput);
+  archers.addEventListener('input', onArcherInput);
 
   form.addEventListener('submit', e => {
     e.preventDefault();
+    const rows = ui.newArchers;
+    const unnamed = rows.findIndex(a => a.who === 'new' && !a.newName.trim());
+    if (unnamed >= 0) { toast(`Enter a name for archer ${unnamed + 1}`); return; }
+    const picked = rows.filter(a => a.who !== 'new').map(a => a.who);
+    if (new Set(picked).size !== picked.length) { toast('The same archer is listed twice'); return; }
+
     const f = new FormData(form);
-    const round = {
-      id: uid(),
+    const groupId = uid();
+    const base = {
       type: f.get('type'),
-      bow: f.get('bow'),
-      face: f.get('face'),
       date: f.get('date') || today(),
       location: (f.get('location') || '').trim(),
       notes: (f.get('notes') || '').trim(),
       createdAt: Date.now(),
       finishedAt: null,
-      ends: [[]],
+      groupId,
     };
-    store.addRound(round);
-    store.updateSettings({ defaultBow: round.bow, defaultFace: round.face });
+    const chosen = rows.map(a => ({ ...a, who: a.who === 'new' ? store.addPerson(a.newName.trim()).id : a.who }));
+    const rounds = chosen.map((a, seat) => ({ ...base, id: uid() + seat, archerId: a.who, seat, bow: a.bow, face: a.face, ends: [[]] }));
+    rounds.forEach(store.addRound);
+
+    store.updateSettings({
+      defaultBow: chosen[0].bow,
+      defaultFace: chosen[0].face,
+      lastArchers: chosen.map(({ who, bow, face }) => ({ who, bow, face })),
+    });
+    ui.newArchers = null;
     navigator.storage?.persist?.().catch(() => {});
-    location.replace(`#/score/${round.id}`);
+    location.replace(`#/score/${rounds[0].id}`);
   });
 }
 
@@ -270,6 +360,7 @@ function renderScore() {
   const st = roundStats(round);
   const settings = store.getSettings();
   const mode = settings.showTarget ? settings.defaultEntry : 'keypad';
+  const group = store.getGroup(round);
   const endIdx = round.ends.length - 1;
   const end = currentEnd(round);
   const full = end.length >= tpl.arrowsPerEnd;
@@ -290,6 +381,14 @@ function renderScore() {
     ? `<div class="prev-end">End ${endIdx}: ${sortArrows(prev).map(a => chip(a.v)).join('')} <b>${st.endTotals[endIdx - 1]}</b></div>`
     : `<div class="prev-end muted">Half ${half} · ${esc(describeConfig(round))}</div>`;
 
+  // With several archers, tabs show whose arrows are being entered; a tick means their end is done.
+  const archerTabs = group.length > 1 ? `
+    <div class="archer-tabs">${group.map(r => `
+      <button type="button" class="archer-tab ${r.id === round.id ? 'on' : ''}" data-action="goto-archer" data-id="${r.id}">
+        <span>${endIsFull(r) ? '✓ ' : ''}${esc(nameOf(r))}</span><b>${roundStats(r).total}</b>
+      </button>`).join('')}
+    </div>` : (archerOf(round) !== store.ME ? `<div class="solo-name">Scoring <b>${esc(nameOf(round))}</b></div>` : '');
+
   let entry;
   if (mode === 'target') {
     const single = singleSpotEntry(round);
@@ -306,11 +405,14 @@ function renderScore() {
     entry = keypadHTML(labels, 'arrow', full);
   }
 
-  const nextBtn = full
-    ? (lastEnd
-      ? '<button type="button" class="btn primary" data-action="finish">Finish round</button>'
-      : '<button type="button" class="btn primary" data-action="next-end">Next end →</button>')
-    : `<button type="button" class="btn" disabled>${end.length}/${tpl.arrowsPerEnd} arrows</button>`;
+  // After this archer's end: move on to the next archer still to shoot, then to the next end.
+  const seat = group.indexOf(round);
+  const waiting = [...group.slice(seat + 1), ...group.slice(0, seat)].find(r => !endIsFull(r));
+  let nextBtn;
+  if (!full) nextBtn = `<button type="button" class="btn" disabled>${end.length}/${tpl.arrowsPerEnd} arrows</button>`;
+  else if (waiting) nextBtn = `<button type="button" class="btn primary" data-action="goto-archer" data-id="${waiting.id}">Next: ${esc(nameOf(waiting))} →</button>`;
+  else if (lastEnd) nextBtn = '<button type="button" class="btn primary" data-action="finish">Finish round</button>';
+  else nextBtn = '<button type="button" class="btn primary" data-action="next-end">Next end →</button>';
 
   app.innerHTML = shell({
     title: `End ${endIdx + 1} of ${tpl.ends}`,
@@ -319,6 +421,7 @@ function renderScore() {
     cls: 'score-screen',
     right: `<a class="icon-btn" href="#/round/${round.id}" aria-label="Scorecard">${ICONS.card}</a>`,
     body: `
+      ${archerTabs}
       <div class="stat-strip">
         <div><small>Total</small><b>${st.total}</b></div>
         <div><small>10s</small><b>${st.tens}</b></div>
@@ -391,18 +494,39 @@ function addArrow(round, arrow) {
   render();
 }
 
+// Archers in a group always have the same number of ends, so going back an end
+// happens for everyone, and only once nobody has started the current end.
 function undo(round) {
-  if (!currentEnd(round).length && round.ends.length > 1) round.ends.pop();
+  const group = store.getGroup(round);
+  if (!currentEnd(round).length) {
+    if (round.ends.length < 2) return;
+    if (group.some(r => currentEnd(r).length)) {
+      toast(`${nameOf(round)} has no arrows in this end yet`);
+      return;
+    }
+    for (const r of group) { r.ends.pop(); store.updateRound(r); }
+  }
   currentEnd(round).pop();
   store.updateRound(round);
   render();
 }
 
+function nextEnd(round) {
+  const group = store.getGroup(round);
+  for (const r of group) { r.ends.push([]); store.updateRound(r); }
+  // Each end starts again with the first archer.
+  if (group[0].id !== round.id) location.replace(`#/score/${group[0].id}`);
+  else render();
+}
+
 function finishRound(round) {
-  round.finishedAt = Date.now();
-  store.updateRound(round);
-  ui.justFinished = round.id;
-  location.replace(`#/round/${round.id}`);
+  const group = store.getGroup(round);
+  for (const r of group) {
+    r.finishedAt = Date.now();
+    store.updateRound(r);
+    ui.justFinished.add(r.id);
+  }
+  location.replace(`#/round/${group[0].id}`);
 }
 
 // ---------- scorecard ----------
@@ -445,14 +569,27 @@ function renderRound() {
   const arrows = round.ends.flat();
   const pts = plotted(arrows);
 
+  const group = store.getGroup(round);
+  const named = showNames();
+
   let banner = '';
-  if (ui.justFinished === round.id) {
-    ui.justFinished = null;
+  if (ui.justFinished.has(round.id)) {
+    ui.justFinished.delete(round.id);
     const pb = isPersonalBest(round) && store.getRounds().filter(r => r.finishedAt && configKey(r) === configKey(round)).length > 1;
-    banner = `<div class="card banner ${pb ? 'pb' : ''}">${pb ? '🏆 New personal best!' : 'Round complete!'} <b>${st.total}/${st.maxScore}</b></div>`;
+    const who = named ? `${nameOf(round)}: ` : '';
+    banner = `<div class="card banner ${pb ? 'pb' : ''}">${pb ? `🏆 ${esc(who)}new personal best!` : `${esc(who)}round complete!`} <b>${st.total}/${st.maxScore}</b></div>`;
   }
 
-  const group = pts.length ? (() => {
+  // Everyone scored in the same session, highest score first, to switch between their cards.
+  const ranked = [...group].sort((a, b) => compareScores(roundStats(a), roundStats(b)));
+  const groupTabs = group.length > 1 ? `
+    <div class="archer-tabs">${ranked.map(r => `
+      <button type="button" class="archer-tab ${r.id === round.id ? 'on' : ''}" data-action="goto-card" data-id="${r.id}">
+        <span>${esc(nameOf(r))}</span><b>${roundStats(r).total}</b>
+      </button>`).join('')}
+    </div>` : '';
+
+  const plot = pts.length ? (() => {
     const c = groupCentre(arrows);
     const dots = pts.map(a => markerSVG(round.face, a, { cls: 'mk dot', r: 0.45, single: true })).join('');
     return `
@@ -464,8 +601,10 @@ function renderRound() {
     title: round.finishedAt ? 'Scorecard' : 'Scorecard (in progress)',
     back: true,
     body: `
+      ${groupTabs}
       ${banner}
       <div class="card totals">
+        ${named ? `<div class="card-name">${esc(nameOf(round))}</div>` : ''}
         <div class="total-big"><b>${st.total}</b><small>/ ${st.maxScore}</small></div>
         <div class="total-grid">
           <div><small>10s</small><b>${st.tens}</b></div>
@@ -479,7 +618,7 @@ function renderRound() {
       ${round.finishedAt ? '' : `<a class="btn primary block" href="#/score/${round.id}">Continue scoring</a>`}
       <p class="muted small-print">Tap an end to correct it.</p>
       ${scorecardHTML(round)}
-      ${group}
+      ${plot}
       <div class="row-actions">
         <button type="button" class="btn" data-action="share">Share score</button>
         <button type="button" class="btn danger" data-action="delete-round">Delete round</button>
@@ -489,7 +628,7 @@ function renderRound() {
 
 function shareText(round) {
   const st = roundStats(round);
-  return `${ROUNDS[round.type].name} · ${describeConfig(round)}\n${fmtDate(round.date)}: ${st.total}/${st.maxScore} ` +
+  return `${showNames() ? nameOf(round) + ' · ' : ''}${ROUNDS[round.type].name} · ${describeConfig(round)}\n${fmtDate(round.date)}: ${st.total}/${st.maxScore} ` +
     `(${st.tens}×10${hasX(round.bow) ? `, ${st.xs}X` : ''})`;
 }
 
@@ -619,18 +758,26 @@ function configOptions(rounds) {
   return seen;
 }
 
+// Archers who have rounds, you first, then everyone else by name.
+function archerOptions(rounds) {
+  const ids = [...new Set(rounds.map(archerOf))];
+  return ids
+    .map(id => [id, store.archerName(id)])
+    .sort((a, b) => (b[0] === store.ME) - (a[0] === store.ME) || a[1].localeCompare(b[1]));
+}
+
 function renderHistory() {
   const rounds = store.getRounds();
-  const configs = configOptions(rounds);
-  if (ui.historyFilter !== 'all' && !configs.has(ui.historyFilter)) ui.historyFilter = 'all';
-  const shown = ui.historyFilter === 'all' ? rounds : rounds.filter(r => configKey(r) === ui.historyFilter);
+  const archers = archerOptions(rounds);
+  if (ui.historyFilter !== 'all' && !archers.some(([id]) => id === ui.historyFilter)) ui.historyFilter = 'all';
+  const shown = ui.historyFilter === 'all' ? rounds : rounds.filter(r => archerOf(r) === ui.historyFilter);
 
   app.innerHTML = shell({
     title: 'History',
     body: rounds.length ? `
-      ${configs.size > 1 ? `<select class="filter" data-change="history-filter">
-        <option value="all">All rounds (${rounds.length})</option>
-        ${[...configs].map(([k, label]) => `<option value="${k}" ${k === ui.historyFilter ? 'selected' : ''}>${esc(label)}</option>`).join('')}
+      ${archers.length > 1 ? `<select class="filter" data-change="history-filter" aria-label="Archer">
+        <option value="all">Everyone (${rounds.length} rounds)</option>
+        ${archers.map(([id, name]) => `<option value="${id}" ${id === ui.historyFilter ? 'selected' : ''}>${esc(name)}</option>`).join('')}
       </select>` : ''}
       <div class="card list">${shown.map(roundRow).join('')}</div>`
       : '<div class="empty"><p>No rounds yet. Your scored rounds will appear here.</p><a class="btn primary" href="#/new">Start a round</a></div>',
@@ -665,9 +812,12 @@ function renderStats() {
     app.innerHTML = shell({ title: 'Stats', body: '<div class="empty"><p>Finish a round to see your stats, personal bests and trends.</p></div>' });
     return;
   }
-  const configs = configOptions(finished);
-  if (!ui.statsConfig || !configs.has(ui.statsConfig)) ui.statsConfig = configKey(finished[0]);
-  const rounds = finished.filter(r => configKey(r) === ui.statsConfig);
+  const archers = archerOptions(finished);
+  if (!archers.some(([id]) => id === ui.statsArcher)) ui.statsArcher = archers[0][0];
+  const mine = finished.filter(r => archerOf(r) === ui.statsArcher);
+  const configs = configOptions(mine);
+  if (!ui.statsConfig || !configs.has(ui.statsConfig)) ui.statsConfig = configKey(mine[0]);
+  const rounds = mine.filter(r => configKey(r) === ui.statsConfig);
   const sample = rounds[0];
   const stats = rounds.map(roundStats);
   const n = rounds.length;
@@ -716,14 +866,17 @@ function renderStats() {
   app.innerHTML = shell({
     title: 'Stats',
     body: `
-      ${configs.size > 1 ? `<select class="filter" data-change="stats-config">
+      ${archers.length > 1 ? `<select class="filter" data-change="stats-archer" aria-label="Archer">
+        ${archers.map(([id, name]) => `<option value="${id}" ${id === ui.statsArcher ? 'selected' : ''}>${esc(name)}</option>`).join('')}
+      </select>` : ''}
+      ${configs.size > 1 ? `<select class="filter" data-change="stats-config" aria-label="Bow and face">
         ${[...configs].map(([k, label]) => `<option value="${k}" ${k === ui.statsConfig ? 'selected' : ''}>${esc(label)}</option>`).join('')}
       </select>` : `<p class="muted">${esc(describeConfig(sample))}</p>`}
       <div class="tiles">${tiles}</div>
       <h2 class="section">Score trend</h2>
       <div class="card">${trendSVG(chrono)}</div>
       ${halfHtml}
-      <h2 class="section">Where your arrows score</h2>
+      <h2 class="section">Where the arrows score</h2>
       <div class="card dist">${dist}</div>
       ${plot}`,
   });
@@ -733,9 +886,38 @@ function renderStats() {
 
 function renderSettings() {
   const s = store.getSettings();
+  const rounds = store.getRounds();
+  const roundCount = id => rounds.filter(r => archerOf(r) === id).length;
+  const peopleHtml = store.getPeople().map(p => {
+    const n = roundCount(p.id);
+    return `
+      <div class="person-row">
+        <input type="text" value="${esc(p.name)}" data-person="${p.id}" maxlength="40" aria-label="Name">
+        ${n
+          ? `<small class="muted">${n} round${n === 1 ? '' : 's'}</small>`
+          : `<button type="button" class="icon-btn remove" data-action="person-delete" data-id="${p.id}" aria-label="Remove ${esc(p.name)}">✕</button>`}
+      </div>`;
+  }).join('');
+
   app.innerHTML = shell({
     title: 'Settings',
     body: `
+      <div class="card form">
+        <label class="field"><span class="field-label">Your name</span>
+          <input type="text" value="${esc(s.myName)}" data-setting="myName" placeholder="Shown on your scorecards" maxlength="40" autocomplete="name"></label>
+      </div>
+
+      <h2 class="section">Other archers</h2>
+      <div class="card form">
+        ${peopleHtml || '<p class="muted small-print">Add the people you score for. You can also add someone when starting a round.</p>'}
+        <div class="person-row">
+          <input type="text" id="new-person" placeholder="New archer's name" maxlength="40" autocomplete="off">
+          <button type="button" class="btn" data-action="person-add">Add</button>
+        </div>
+        ${peopleHtml ? '<p class="muted small-print">Tap a name to change it. Archers with rounds can\'t be removed.</p>' : ''}
+      </div>
+
+      <h2 class="section">Scoring</h2>
       <div class="card form">
         <label class="toggle">
           <span><span class="field-label">Target face</span>
@@ -776,10 +958,10 @@ function renderSettings() {
 }
 
 function exportCSV() {
-  const rows = [['round_id', 'date', 'round', 'bow', 'face', 'location', 'end', 'arrow', 'score', 'value', 'x_cm', 'y_cm', 'spot']];
+  const rows = [['round_id', 'archer', 'date', 'round', 'bow', 'face', 'location', 'end', 'arrow', 'score', 'value', 'x_cm', 'y_cm', 'spot']];
   for (const r of [...store.getRounds()].reverse()) {
     r.ends.forEach((end, i) => end.forEach((a, k) => rows.push([
-      r.id, r.date, ROUNDS[r.type].name, BOWS[r.bow], FACES[r.face], r.location || '', i + 1, k + 1, a.v,
+      r.id, nameOf(r), r.date, ROUNDS[r.type].name, BOWS[r.bow], FACES[r.face], r.location || '', i + 1, k + 1, a.v,
       a.v === 'X' ? 10 : a.v === 'M' ? 0 : Number(a.v), a.x ?? '', a.y ?? '', a.x != null ? (a.s || 0) + 1 : '',
     ])));
   }
@@ -801,12 +983,39 @@ document.addEventListener('click', e => {
       break;
     case 'arrow': addArrow(round, { v: el.dataset.v }); break;
     case 'undo': undo(round); break;
-    case 'next-end':
-      round.ends.push([]);
-      store.updateRound(round);
+    case 'next-end': nextEnd(round); break;
+    case 'finish': finishRound(round); break;
+    case 'goto-archer': location.replace(`#/score/${el.dataset.id}`); break;
+    case 'goto-card': location.replace(`#/round/${el.dataset.id}`); break;
+    case 'archer-add': {
+      const rows = ui.newArchers;
+      const taken = new Set(rows.map(a => a.who));
+      const free = [store.ME, ...store.getPeople().map(p => p.id)].find(id => !taken.has(id));
+      const last = rows[rows.length - 1];
+      rows.push({ who: free || 'new', newName: '', bow: last.bow, face: last.face });
+      $('#archers').innerHTML = archerRowsHTML();
+      $('#rules-hint').innerHTML = rulesHintHTML();
+      if (!free) $(`[data-row="${rows.length - 1}"] [data-arch="newName"]`)?.focus();
+      break;
+    }
+    case 'archer-remove':
+      ui.newArchers.splice(Number(el.dataset.i), 1);
+      $('#archers').innerHTML = archerRowsHTML();
+      $('#rules-hint').innerHTML = rulesHintHTML();
+      break;
+    case 'person-add': {
+      const box = $('#new-person');
+      const name = box.value.trim();
+      if (!name) { toast('Enter a name first'); box.focus(); return; }
+      store.addPerson(name);
+      render();
+      toast(`Added ${name}`);
+      break;
+    }
+    case 'person-delete':
+      store.deletePerson(el.dataset.id);
       render();
       break;
-    case 'finish': finishRound(round); break;
     case 'mode':
       store.updateSettings({ defaultEntry: el.dataset.m });
       render();
@@ -850,7 +1059,7 @@ document.addEventListener('click', e => {
     case 'restore-import': restoreFromCode(); break;
     case 'modal-close': closeModal(); break;
     case 'wipe':
-      if (confirm('Delete ALL rounds and settings from this phone?') && confirm('Are you sure? Export a backup first if you might want them back.')) {
+      if (confirm('Delete ALL rounds, archers and settings from this phone?') && confirm('Are you sure? Export a backup first if you might want them back.')) {
         store.wipeAll();
         toast('All data deleted');
         go('#/');
@@ -868,9 +1077,17 @@ modal.addEventListener('click', e => {
 
 document.addEventListener('change', async e => {
   const el = e.target;
+  if (el.dataset.person) {
+    const name = el.value.trim();
+    if (!name) { el.value = store.archerName(el.dataset.person); toast('A name is needed'); return; }
+    store.renamePerson(el.dataset.person, name);
+    toast('Saved');
+    return;
+  }
   if (el.dataset.setting) {
     const key = el.dataset.setting;
     let value = el.type === 'checkbox' ? el.checked : el.value;
+    if (key === 'myName') value = value.trim();
     if (key === 'arrowDiameterMm') {
       value = Number(value);
       if (!(value >= 3 && value <= 12)) { toast('Enter a diameter between 3 and 12mm'); return; }
@@ -883,6 +1100,7 @@ document.addEventListener('change', async e => {
   }
   switch (el.dataset.change) {
     case 'history-filter': ui.historyFilter = el.value; render(); break;
+    case 'stats-archer': ui.statsArcher = el.value; ui.statsConfig = null; render(); break;
     case 'stats-config': ui.statsConfig = el.value; render(); break;
     case 'import': {
       const file = el.files[0];

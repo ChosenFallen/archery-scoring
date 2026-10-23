@@ -184,6 +184,43 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .toggle input:checked::after { transform: translateX(20px); }
 .toggle input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
+/* ---------- archers ---------- */
+
+.archers { display: grid; gap: 10px; }
+.archer-row { display: grid; gap: 8px; background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow); padding: 12px; }
+.archer-top { display: flex; align-items: center; gap: 8px; }
+.archer-no { flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: var(--surface-2); font-weight: 700; font-size: 14px; }
+.archer-opts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.archer-row select, .archer-row input, .person-row input {
+  width: 100%; min-height: 44px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg);
+}
+.archer-top select { flex: 1; font-weight: 600; }
+.icon-btn.remove { flex: none; color: var(--muted); font-size: 18px; }
+.icon-btn.remove:active { background: var(--surface-2); }
+
+.archer-tabs { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; flex: none; }
+.archer-tabs::-webkit-scrollbar { display: none; }
+.archer-tab {
+  flex: 1 0 auto; min-width: 84px; display: flex; flex-direction: column; align-items: center; gap: 0;
+  padding: 6px 10px; border: 2px solid transparent; border-radius: 12px;
+  background: var(--surface); box-shadow: var(--shadow); cursor: pointer;
+}
+.archer-tab span { font-size: 13px; color: var(--muted); max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.archer-tab b { font-size: 18px; }
+.archer-tab.on { border-color: var(--accent); }
+.archer-tab.on span { color: var(--text); font-weight: 700; }
+.screen:not(.score-screen) .archer-tabs { margin-bottom: 16px; }
+.solo-name { font-size: 15px; }
+
+.active-list { display: grid; gap: 6px; margin: 10px 0 14px; }
+.active-archer { display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 15px; }
+.active-archer .big-num { font-size: 40px; }
+.card-name { font-size: 18px; font-weight: 700; }
+
+.person-row { display: flex; align-items: center; gap: 8px; }
+.person-row small { flex: none; }
+.person-row .btn { min-height: 44px; }
+
 .hint { margin: 0; padding: 12px 14px; font-size: 14px; border-left: 4px solid var(--blue); }
 .hint p { margin: 4px 0; }
 

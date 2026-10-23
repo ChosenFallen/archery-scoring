@@ -67,7 +67,10 @@ export function rulesHint(bow, face) {
   return parts;
 }
 
-export const configKey = r => `${r.type}|${r.bow}|${r.face}`;
+// Rounds from before multiple archers existed have no archerId and belong to "me".
+export const archerOf = r => r.archerId || 'me';
+// Personal bests and stats are kept separately for each archer, round, bow and face.
+export const configKey = r => `${archerOf(r)}|${r.type}|${r.bow}|${r.face}`;
 export const describeConfig = r => `${BOWS[r.bow]} · ${FACES[r.face]}`;
 
 export function roundStats(round) {

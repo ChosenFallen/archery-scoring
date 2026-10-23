@@ -8,7 +8,12 @@ const DEFAULT_SETTINGS = {
   defaultFace: 'full40',
   defaultEntry: 'keypad',
   showTarget: true,
+  myName: '',
+  // Archers chosen for the last round, offered again for the next one.
+  lastArchers: null,
 };
+
+const empty = () => ({ rounds: [], people: [], settings: { ...DEFAULT_SETTINGS } });
 
 let data = load();
 
@@ -17,12 +22,16 @@ function load() {
     const raw = localStorage.getItem(KEY);
     if (raw) {
       const d = JSON.parse(raw);
-      return { rounds: Array.isArray(d.rounds) ? d.rounds : [], settings: { ...DEFAULT_SETTINGS, ...(d.settings || {}) } };
+      return {
+        rounds: Array.isArray(d.rounds) ? d.rounds : [],
+        people: Array.isArray(d.people) ? d.people : [],
+        settings: { ...DEFAULT_SETTINGS, ...(d.settings || {}) },
+      };
     }
   } catch (e) {
     console.error('Could not read saved data', e);
   }
-  return { rounds: [], settings: { ...DEFAULT_SETTINGS } };
+  return empty();
 }
 
 let onSaveError = () => {};
@@ -58,6 +67,41 @@ export function deleteRound(id) {
   save();
 }
 
+// Rounds scored together share a groupId; seat is the order archers are scored in.
+export function getGroup(round) {
+  if (!round.groupId) return [round];
+  return data.rounds.filter(r => r.groupId === round.groupId).sort((a, b) => (a.seat || 0) - (b.seat || 0));
+}
+
+// ---------- people ----------
+// "You" are not in this list: your rounds use the archer id 'me' and your name is in settings.
+
+export const ME = 'me';
+
+export const getPeople = () => [...data.people].sort((a, b) => a.name.localeCompare(b.name));
+
+export function addPerson(name) {
+  const person = { id: 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name };
+  data.people.push(person);
+  save();
+  return person;
+}
+
+export function renamePerson(id, name) {
+  const p = data.people.find(x => x.id === id);
+  if (p) { p.name = name; save(); }
+}
+
+export function deletePerson(id) {
+  data.people = data.people.filter(p => p.id !== id);
+  save();
+}
+
+export function archerName(id) {
+  if (!id || id === ME) return data.settings.myName || 'Me';
+  return data.people.find(p => p.id === id)?.name || 'Unknown archer';
+}
+
 export const getSettings = () => data.settings;
 
 export function updateSettings(patch) {
@@ -73,6 +117,10 @@ export function exportJSON() {
 export function importJSON(text) {
   const d = JSON.parse(text);
   if (!d || !Array.isArray(d.rounds)) throw new Error('This file is not an archery scoring backup.');
+  const knownPeople = new Set(data.people.map(p => p.id));
+  for (const p of Array.isArray(d.people) ? d.people : []) {
+    if (p && p.id && p.name && !knownPeople.has(p.id)) data.people.push({ id: p.id, name: p.name });
+  }
   const existing = new Set(data.rounds.map(r => r.id));
   let added = 0;
   for (const r of d.rounds) {
@@ -86,6 +134,6 @@ export function importJSON(text) {
 }
 
 export function wipeAll() {
-  data = { rounds: [], settings: { ...DEFAULT_SETTINGS } };
+  data = empty();
   save();
 }
