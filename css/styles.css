@@ -313,6 +313,10 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .sheet h2 { margin: 0; }
 .sheet p { margin: 0; }
 .sheet .slot { cursor: pointer; }
+.code-box {
+  width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px;
+  background: var(--surface); font: 13px/1.4 ui-monospace, Consolas, monospace; word-break: break-all; resize: vertical;
+}
 .sheet .row-actions { margin-top: 4px; }
 
 .toast {

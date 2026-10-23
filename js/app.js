@@ -116,7 +116,7 @@ function render() {
   renderModal();
 }
 
-window.addEventListener('hashchange', () => { ui.editing = null; render(); window.scrollTo(0, 0); });
+window.addEventListener('hashchange', () => { ui.editing = null; ui.restoring = false; render(); window.scrollTo(0, 0); });
 
 // ---------- shared pieces ----------
 
@@ -511,7 +511,14 @@ function openEdit(round, i) {
   renderModal();
 }
 
+function closeModal() {
+  ui.editing = null;
+  ui.restoring = false;
+  renderModal();
+}
+
 function renderModal() {
+  if (ui.restoring) return renderRestoreSheet();
   const ed = ui.editing;
   if (!ed) { modal.hidden = true; modal.innerHTML = ''; return; }
   const round = store.getRound(ed.roundId);
@@ -530,6 +537,78 @@ function renderModal() {
         <button type="button" class="btn primary" data-action="edit-save">Save</button>
       </div>
     </div>`;
+}
+
+// ---------- backup code (clipboard) ----------
+
+// A backup code is the JSON backup, compressed and base64url-encoded, behind a short prefix.
+const BACKUP_PREFIX = 'ARCHERY1:';
+
+async function encodeBackup(text) {
+  const stream = new Blob([text]).stream().pipeThrough(new CompressionStream('deflate-raw'));
+  const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return BACKUP_PREFIX + btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+async function decodeBackup(code) {
+  const clean = code.replace(/\s+/g, '');
+  if (!clean.startsWith(BACKUP_PREFIX)) throw new Error("That doesn't look like an archery backup code.");
+  let b64 = clean.slice(BACKUP_PREFIX.length).replace(/-/g, '+').replace(/_/g, '/');
+  while (b64.length % 4) b64 += '=';
+  try {
+    const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+    return await new Response(stream).text();
+  } catch {
+    throw new Error('The backup code is incomplete or damaged. Make sure you copied all of it.');
+  }
+}
+
+async function copyBackupCode() {
+  const code = await encodeBackup(store.exportJSON());
+  try {
+    await navigator.clipboard.writeText(code);
+    const n = store.getRounds().length;
+    toast(`Backup code copied: ${n} round${n === 1 ? '' : 's'}. Paste it somewhere safe.`);
+  } catch {
+    // Clipboard blocked: show the code so it can be copied by hand.
+    ui.restoring = true;
+    renderModal();
+    const box = $('#restore-code');
+    box.value = code;
+    box.select();
+    toast('Could not copy automatically. Select the code and copy it.');
+  }
+}
+
+function renderRestoreSheet() {
+  modal.hidden = false;
+  modal.innerHTML = `
+    <div class="sheet" role="dialog" aria-label="Restore from backup code">
+      <h2>Backup code</h2>
+      <p class="muted">Paste a backup code to add its rounds to this phone. Rounds already here are kept.</p>
+      <textarea id="restore-code" class="code-box" rows="6" spellcheck="false" autocomplete="off" placeholder="ARCHERY1:…"></textarea>
+      <button type="button" class="btn block" data-action="restore-paste">Paste from clipboard</button>
+      <div class="row-actions">
+        <button type="button" class="btn" data-action="modal-close">Cancel</button>
+        <button type="button" class="btn primary" data-action="restore-import">Restore</button>
+      </div>
+    </div>`;
+}
+
+async function restoreFromCode() {
+  const code = $('#restore-code').value.trim();
+  if (!code) { toast('Paste a backup code first'); return; }
+  try {
+    const { added, skipped } = store.importJSON(await decodeBackup(code));
+    closeModal();
+    render();
+    toast(`Restored ${added} round${added === 1 ? '' : 's'}${skipped ? `, ${skipped} already here` : ''}`);
+  } catch (err) {
+    toast(err.message || 'Could not read that backup code');
+  }
 }
 
 // ---------- history ----------
@@ -674,6 +753,9 @@ function renderSettings() {
       <div class="card">
         <p class="muted small-print">Your scores are saved only on this phone. Export a backup now and then so you don't lose them if you change phones or clear Chrome's data.</p>
         <div class="stack">
+          <button type="button" class="btn block" data-action="copy-code">Copy backup code</button>
+          <button type="button" class="btn block" data-action="restore-open">Restore from backup code</button>
+          <p class="muted small-print">A backup code is all your rounds as one line of text. Paste it into a note, email or message to keep it safe.</p>
           <button type="button" class="btn block" data-action="export-json">Export backup (.json)</button>
           <label class="btn block">Import backup<input type="file" accept="application/json,.json" data-change="import" hidden></label>
           <button type="button" class="btn block" data-action="export-csv">Export spreadsheet (.csv)</button>
@@ -758,6 +840,15 @@ document.addEventListener('click', e => {
       break;
     case 'export-json': download(`archery-backup-${today()}.json`, store.exportJSON(), 'application/json'); break;
     case 'export-csv': exportCSV(); break;
+    case 'copy-code': copyBackupCode(); break;
+    case 'restore-open': ui.restoring = true; renderModal(); $('#restore-code').focus(); break;
+    case 'restore-paste':
+      navigator.clipboard.readText()
+        .then(text => { $('#restore-code').value = text; })
+        .catch(() => toast('Could not read the clipboard. Long-press the box and choose Paste.'));
+      break;
+    case 'restore-import': restoreFromCode(); break;
+    case 'modal-close': closeModal(); break;
     case 'wipe':
       if (confirm('Delete ALL rounds and settings from this phone?') && confirm('Are you sure? Export a backup first if you might want them back.')) {
         store.wipeAll();
@@ -772,7 +863,7 @@ document.addEventListener('click', e => {
 let pressedBackdrop = false;
 modal.addEventListener('pointerdown', e => { pressedBackdrop = e.target === modal; });
 modal.addEventListener('click', e => {
-  if (e.target === modal && pressedBackdrop) { ui.editing = null; renderModal(); }
+  if (e.target === modal && pressedBackdrop) closeModal();
 });
 
 document.addEventListener('change', async e => {
