@@ -1,6 +1,6 @@
 // Target face drawing (SVG, units are centimetres) and hit testing.
 
-import { ringOuter, lowestRing, X_RADIUS, scoreAtDistance } from './rules.js';
+import { ringOuter, lowestRing, X_RADIUS, scoreAtDistance, scoreBand } from './rules.js';
 
 const RING_FILL = {
   1: '#ffffff', 2: '#ffffff', 3: '#1d1d1f', 4: '#1d1d1f', 5: '#14a0d8',
@@ -42,9 +42,10 @@ export function faceSVG(face, content = '', attrs = '') {
 
 // A single spot with every arrow overlaid on it. Used for grouping plots, and for plotting
 // on the triple spot, where one large spot is far easier to tap accurately than three small ones.
-export function singleSpotSVG(face, content = '', attrs = '') {
+// `radius` zooms in to show only that far from the centre.
+export function singleSpotSVG(face, content = '', attrs = '', radius = null) {
   const lowest = lowestRing(face);
-  const r = ringOuter(lowest) + 1;
+  const r = radius ?? ringOuter(lowest) + 1;
   return svgOpen([-r, -r, r * 2, r * 2], attrs) + spotSVG(0, 0, lowest) + content + '</svg>';
 }
 
@@ -64,7 +65,26 @@ export function hitTest(face, bow, x, y, arrowDiameterMm, single = false) {
   };
 }
 
-const hasPos = a => typeof a.x === 'number' && typeof a.y === 'number';
+export const hasPos = a => typeof a.x === 'number' && typeof a.y === 'number';
+
+// Moves a plotted arrow the shortest distance that makes it score `label`, keeping its
+// direction from the centre. Returns the new {x, y}, or null if it can't be placed.
+export function snapToScore(a, bow, face, label, arrowDiameterMm) {
+  const band = scoreBand(bow, face, label);
+  if (!band || !hasPos(a)) return null;
+  // Sit just inside the ring rather than exactly on its line.
+  const MARGIN = 0.05;
+  const r = arrowDiameterMm / 20;
+  const lo = Math.max(0, band[0] + r + MARGIN);
+  const hi = band[1] + r - MARGIN;
+  const d = Math.hypot(a.x, a.y);
+  const target = Math.min(Math.max(d, lo), hi);
+  if (target === d) return { x: a.x, y: a.y };
+  // An arrow dead centre has no direction, so it moves straight up.
+  const ux = d ? a.x / d : 0;
+  const uy = d ? a.y / d : -1;
+  return { x: Math.round(ux * target * 100) / 100, y: Math.round(uy * target * 100) / 100 };
+}
 export const plotted = arrows => arrows.filter(hasPos);
 
 // Marker for an arrow on the full face (positions are stored relative to their spot).

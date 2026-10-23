@@ -48,6 +48,20 @@ export function scoreAtDistance(bow, face, distCm, arrowDiameterMm) {
   return 'M';
 }
 
+// The range of distances (arrow edge from centre, in cm) that score `label`, as
+// [low, high] where low is exclusive and high inclusive. Null if the label can't be scored.
+export function scoreBand(bow, face, label) {
+  const lowest = lowestRing(face);
+  if (label === 'M') return [ringOuter(lowest), Infinity];
+  if (label === (bow === 'compound' ? '10' : 'X')) return [-Infinity, X_RADIUS];
+  if (label === '10') return [X_RADIUS, ringOuter(10)];
+  const n = Number(label);
+  // Compound's 9 includes the outer part of the 10 ring.
+  if (bow === 'compound' && n === 9) return [X_RADIUS, ringOuter(9)];
+  if (!(n >= lowest && n <= 9)) return null;
+  return [ringOuter(n + 1), ringOuter(n)];
+}
+
 export function labelClass(label) {
   if (label === 'X' || label === '10' || label === '9') return 'z-gold';
   if (label === '8' || label === '7') return 'z-red';

@@ -1,10 +1,11 @@
 import {
-  ROUNDS, BOWS, FACES, hasX, allowedLabels, sortArrows, labelClass, rulesHint,
+  ROUNDS, BOWS, FACES, hasX, allowedLabels, sortArrows, labelClass, rulesHint, ringOuter, lowestRing,
   roundStats, compareScores, configKey, describeConfig, archerOf,
 } from './rules.js';
 import * as store from './store.js';
 import {
   faceSVG, singleSpotSVG, hitTest, markerSVG, plotted, groupCentre, centreSVG, describeOffset,
+  hasPos, snapToScore,
 } from './face.js';
 
 // How far above the finger the arrow marker sits while placing it on the target.
@@ -372,7 +373,7 @@ function renderScore() {
   const slots = Array.from({ length: tpl.arrowsPerEnd }, (_, i) => {
     const a = end[i];
     return a
-      ? `<div class="slot filled ${labelClass(a.v)}">${esc(a.v)}</div>`
+      ? `<button type="button" class="slot filled ${labelClass(a.v)}" data-action="edit-arrow" data-i="${endIdx}" data-k="${i}" aria-label="Change arrow ${i + 1}">${esc(a.v)}</button>`
       : `<div class="slot ${i === end.length ? 'next' : ''}"></div>`;
   }).join('');
 
@@ -399,7 +400,7 @@ function renderScore() {
       `<g id="ghost" class="ghost" style="display:none"><circle class="ghost-ring" r="2.4"/><circle class="ghost-dot" r="${Math.max(settings.arrowDiameterMm / 20, 0.3)}"/></g>`;
     const attrs = 'id="target-svg"';
     entry = `
-      <div class="preview" id="preview">${full ? 'End complete' : 'Touch and drag to place the arrow'}</div>
+      <div class="preview" id="preview">${full ? 'End complete. Tap a score above to adjust it.' : end.length ? 'Place the next arrow, or tap a score to adjust it' : 'Touch and drag to place the arrow'}</div>
       <div class="face-wrap" id="face-wrap">${single ? singleSpotSVG(round.face, content, attrs) : faceSVG(round.face, content, attrs)}</div>`;
   } else {
     entry = keypadHTML(labels, 'arrow', full);
@@ -645,9 +646,30 @@ async function share(round) {
 
 // ---------- edit end modal ----------
 
-function openEdit(round, i) {
-  ui.editing = { roundId: round.id, i, arrows: round.ends[i].map(a => ({ ...a })), sel: 0 };
+function openEdit(round, i, sel = 0) {
+  ui.editing = { roundId: round.id, i, arrows: round.ends[i].map(a => ({ ...a })), sel };
   renderModal();
+}
+
+// Changing a plotted arrow's score moves its dot into the new ring; an unplotted one just changes.
+function setEditedScore(v) {
+  const ed = ui.editing;
+  const round = store.getRound(ed.roundId);
+  const a = ed.arrows[ed.sel];
+  const pos = snapToScore(a, round.bow, round.face, v, store.getSettings().arrowDiameterMm);
+  ed.arrows[ed.sel] = pos ? { ...a, v, ...pos } : { v };
+}
+
+function editPlotHTML(round, ed) {
+  const pts = ed.arrows.filter(hasPos);
+  if (!pts.length) return '';
+  const r = Math.max(store.getSettings().arrowDiameterMm / 20, 0.3);
+  // Every arrow's position is relative to its own spot, so draw one spot zoomed to fit the arrows.
+  const reach = Math.max(...pts.map(a => Math.hypot(a.x, a.y)));
+  const zoom = Math.min(Math.max(reach + 2.5, 6), ringOuter(lowestRing(round.face)) + 1);
+  const marks = ed.arrows.map((a, k) =>
+    markerSVG(round.face, a, { label: String(k + 1), single: true, r, cls: k === ed.sel ? 'mk sel' : 'mk' })).join('');
+  return `<div class="edit-plot">${singleSpotSVG(round.face, marks, '', zoom)}</div>`;
 }
 
 function closeModal() {
@@ -666,10 +688,11 @@ function renderModal() {
   modal.innerHTML = `
     <div class="sheet" role="dialog" aria-label="Edit end">
       <h2>Edit end ${ed.i + 1}</h2>
-      <p class="muted">Tap an arrow, then its correct score.</p>
+      <p class="muted">Tap an arrow, then its correct score.${ed.arrows.some(hasPos) ? ' Plotted arrows move into the ring you pick.' : ''}</p>
       <div class="end-row">${ed.arrows.map((a, k) => `
         <button type="button" class="slot filled ${labelClass(a.v)} ${k === ed.sel ? 'sel' : ''}" data-action="edit-sel" data-k="${k}">${esc(a.v)}</button>`).join('')}
       </div>
+      ${editPlotHTML(round, ed)}
       ${keypadHTML(labels, 'edit-set')}
       <div class="row-actions">
         <button type="button" class="btn" data-action="edit-cancel">Cancel</button>
@@ -1022,10 +1045,10 @@ document.addEventListener('click', e => {
       break;
     case 'edit-end': openEdit(round, Number(el.dataset.i)); break;
     case 'edit-sel': ui.editing.sel = Number(el.dataset.k); renderModal(); break;
+    case 'edit-arrow': openEdit(round, Number(el.dataset.i), Number(el.dataset.k)); break;
     case 'edit-set': {
       const ed = ui.editing;
-      // A typed score replaces any plotted position, since it no longer matches.
-      ed.arrows[ed.sel] = { v: el.dataset.v };
+      setEditedScore(el.dataset.v);
       ed.sel = Math.min(ed.sel + 1, ed.arrows.length - 1);
       renderModal();
       break;
