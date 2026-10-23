@@ -55,6 +55,17 @@ function download(name, text, type) {
 }
 
 const chip = v => `<span class="chip ${labelClass(v)}">${esc(v)}</span>`;
+
+// Rows are laid out so buttons of the same ring colour always share a row:
+// gold scores and M first, then the rest four to a row (8 7 6 5 / 4 3 2 1).
+function keypadHTML(labels, action, disabled = false) {
+  const gold = labels.filter(v => labelClass(v) === 'z-gold');
+  const rest = labels.filter(v => labelClass(v) !== 'z-gold' && v !== 'M');
+  const rows = [[...gold, 'M']];
+  for (let i = 0; i < rest.length; i += 4) rows.push(rest.slice(i, i + 4));
+  const key = v => `<button type="button" class="key ${labelClass(v)}" data-action="${action}" data-v="${v}" ${disabled ? 'disabled' : ''}>${v}</button>`;
+  return `<div class="keypad">${rows.map(r => `<div class="key-row">${r.map(key).join('')}</div>`).join('')}</div>`;
+}
 const go = hash => { location.hash = hash; };
 
 function currentEnd(round) { return round.ends[round.ends.length - 1]; }
@@ -292,8 +303,7 @@ function renderScore() {
       <div class="preview" id="preview">${full ? 'End complete' : 'Touch and drag to place the arrow'}</div>
       <div class="face-wrap" id="face-wrap">${single ? singleSpotSVG(round.face, content, attrs) : faceSVG(round.face, content, attrs)}</div>`;
   } else {
-    entry = `<div class="keypad ${labels.length <= 7 ? 'small' : ''}">${labels.map(v =>
-      `<button type="button" class="key ${labelClass(v)}" data-action="arrow" data-v="${v}" ${full ? 'disabled' : ''}>${v}</button>`).join('')}</div>`;
+    entry = keypadHTML(labels, 'arrow', full);
   }
 
   const nextBtn = full
@@ -514,8 +524,7 @@ function renderModal() {
       <div class="end-row">${ed.arrows.map((a, k) => `
         <button type="button" class="slot filled ${labelClass(a.v)} ${k === ed.sel ? 'sel' : ''}" data-action="edit-sel" data-k="${k}">${esc(a.v)}</button>`).join('')}
       </div>
-      <div class="keypad ${labels.length <= 7 ? 'small' : ''}">${labels.map(v =>
-        `<button type="button" class="key ${labelClass(v)}" data-action="edit-set" data-v="${v}">${v}</button>`).join('')}</div>
+      ${keypadHTML(labels, 'edit-set')}
       <div class="row-actions">
         <button type="button" class="btn" data-action="edit-cancel">Cancel</button>
         <button type="button" class="btn primary" data-action="edit-save">Save</button>
