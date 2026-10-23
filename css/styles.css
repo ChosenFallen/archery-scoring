@@ -243,6 +243,16 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 .slot:not(.filled) { background: transparent; }
 .slot.next { border-color: var(--accent); }
+.slots { flex: 1; min-width: 0; display: flex; gap: 8px; }
+/* Practice with no limit per end: boxes wrap, four to a row. */
+.end-row.open .slots { flex-wrap: wrap; align-content: flex-start; max-height: 116px; overflow-y: auto; }
+.end-row.open .slot { flex: 0 0 calc(25% - 6px); height: 54px; font-size: 24px; }
+.sheet .end-row { flex-wrap: wrap; }
+.sheet .end-row .slot { flex: 1 0 calc(25% - 6px); }
+.text-btn { border: 0; background: transparent; color: #ffe047; font-weight: 700; padding: 8px 10px; border-radius: 10px; cursor: pointer; }
+.text-btn:active { background: rgba(255, 255, 255, 0.15); }
+.arrows-cell { text-align: left !important; }
+.arrows-cell .chip { margin: 2px 4px 2px 0; }
 .slot.filled { border-style: solid; border-color: transparent; }
 .slot.sel { outline: 3px solid var(--accent); outline-offset: 2px; }
 .end-total { width: 70px; display: grid; place-items: center; align-content: center; background: var(--surface); border-radius: 12px; box-shadow: var(--shadow); font-size: 26px; font-weight: 800; }

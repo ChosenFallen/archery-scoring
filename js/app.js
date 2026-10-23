@@ -1,6 +1,6 @@
 import {
   ROUNDS, BOWS, FACES, hasX, allowedLabels, sortArrows, labelClass, rulesHint, ringOuter, lowestRing,
-  roundStats, compareScores, configKey, describeConfig, archerOf,
+  roundStats, compareScores, configKey, describeConfig, archerOf, roundSpec, isPractice,
 } from './rules.js';
 import * as store from './store.js';
 import {
@@ -78,7 +78,15 @@ const showNames = () => store.getPeople().length > 0 || store.getRounds().some(r
 
 function currentEnd(round) { return round.ends[round.ends.length - 1]; }
 const singleSpotEntry = round => round.face === 'triple40';
-function endIsFull(round) { return currentEnd(round).length >= ROUNDS[round.type].arrowsPerEnd; }
+// Whether no more arrows fit in this end. A practice end with no limit is never full.
+function endIsFull(round) {
+  const per = roundSpec(round).arrowsPerEnd;
+  return !!per && currentEnd(round).length >= per;
+}
+// Whether this archer has shot this end, so scoring can move on. With no limit, one arrow is enough.
+function endIsDone(round) {
+  return roundSpec(round).arrowsPerEnd ? endIsFull(round) : currentEnd(round).length > 0;
+}
 
 function shell({ title, back = false, right = '', body, nav = true, cls = '' }) {
   const tab = (href, label, icon) =>
@@ -145,9 +153,11 @@ function roundRow(r) {
         <div class="rr-date">${esc(named ? nameOf(r) : fmtDate(r.date))} ${status}</div>
         <div class="rr-config">${named ? esc(fmtDate(r.date)) + ' · ' : ''}${esc(describeConfig(r))}${r.location ? ' · ' + esc(r.location) : ''}</div>
       </div>
-      <div class="rr-score">
+      <div class="rr-score">${isPractice(r) ? `
+        <b>${st.avg.toFixed(2)}</b><small> avg</small>
+        <div class="rr-sub">${st.total} from ${st.arrows} arrows</div>` : `
         <b>${st.total}</b><small>/${st.maxScore}</small>
-        <div class="rr-sub">${st.tens}×10${hasX(r.bow) ? ` · ${st.xs}X` : ''}</div>
+        <div class="rr-sub">${st.tens}×10${hasX(r.bow) ? ` · ${st.xs}X` : ''}</div>`}
       </div>
     </a>`;
 }
@@ -155,7 +165,8 @@ function roundRow(r) {
 function bestByConfig(rounds) {
   const best = new Map();
   for (const r of rounds) {
-    if (!r.finishedAt) continue;
+    // Practice has no fixed length, so its totals can't be compared as personal bests.
+    if (!r.finishedAt || isPractice(r)) continue;
     const st = roundStats(r);
     const k = configKey(r);
     if (!best.has(k) || compareScores(st, best.get(k).st) < 0) best.set(k, { r, st });
@@ -194,7 +205,9 @@ function renderHome() {
     return `
       <div class="card active-card">
         <div class="card-label">Round in progress</div>
-        <div class="muted">${esc(fmtDate(first.date))} · End ${first.ends.length} of ${ROUNDS[first.type].ends}</div>
+        <div class="muted">${esc(fmtDate(first.date))} · ${isPractice(first)
+          ? `Practice · End ${first.ends.length}`
+          : `End ${first.ends.length} of ${ROUNDS[first.type].ends}`}</div>
         <div class="active-list">${lines}</div>
         <a class="btn primary block" href="#/score/${first.id}">Resume scoring</a>
       </div>`;
@@ -274,6 +287,11 @@ function rulesHintHTML() {
 
 function renderNew() {
   if (!ui.newArchers) ui.newArchers = defaultArchers();
+  const s = store.getSettings();
+  const lastType = ROUNDS[s.lastType] ? s.lastType : 'wa18';
+  const roundLabel = t => (t.practice ? `${t.name} · no set length` : `${t.name} · ${t.ends * t.arrowsPerEnd} arrows`);
+  const perEndOptions = ['', ...Array.from({ length: 12 }, (_, i) => String(i + 1))]
+    .map(v => `<option value="${v}" ${v === String(s.lastPerEnd || '') ? 'selected' : ''}>${v ? `${v} arrow${v === '1' ? '' : 's'}` : 'No limit'}</option>`).join('');
 
   app.innerHTML = shell({
     title: 'New round',
@@ -283,8 +301,13 @@ function renderNew() {
       <form id="new-form" class="form">
         <div class="field">
           <span class="field-label">Round</span>
-          <select name="type">${Object.values(ROUNDS).map(t => `<option value="${t.id}">${esc(t.name)} · ${t.ends * t.arrowsPerEnd} arrows</option>`).join('')}</select>
+          <select name="type">${Object.values(ROUNDS).map(t => `<option value="${t.id}" ${t.id === lastType ? 'selected' : ''}>${esc(roundLabel(t))}</option>`).join('')}</select>
         </div>
+        <label class="field" id="per-end-field" ${ROUNDS[lastType].practice ? '' : 'hidden'}>
+          <span class="field-label">Arrows per end</span>
+          <select name="perEnd">${perEndOptions}</select>
+          <small class="muted">With no limit, you choose when each end is over. Finish the practice whenever you're done.</small>
+        </label>
         <div class="field">
           <span class="field-label">Archers</span>
           <div id="archers" class="archers">${archerRowsHTML()}</div>
@@ -315,6 +338,9 @@ function renderNew() {
   };
   archers.addEventListener('change', onArcherInput);
   archers.addEventListener('input', onArcherInput);
+  form.elements.type.addEventListener('change', e => {
+    $('#per-end-field').hidden = !ROUNDS[e.target.value].practice;
+  });
 
   form.addEventListener('submit', e => {
     e.preventDefault();
@@ -326,8 +352,11 @@ function renderNew() {
 
     const f = new FormData(form);
     const groupId = uid();
+    const type = f.get('type');
+    const perEnd = ROUNDS[type].practice ? Number(f.get('perEnd')) || null : null;
     const base = {
-      type: f.get('type'),
+      type,
+      ...(ROUNDS[type].practice ? { arrowsPerEnd: perEnd } : {}),
       date: f.get('date') || today(),
       location: (f.get('location') || '').trim(),
       notes: (f.get('notes') || '').trim(),
@@ -343,6 +372,8 @@ function renderNew() {
       defaultBow: chosen[0].bow,
       defaultFace: chosen[0].face,
       lastArchers: chosen.map(({ who, bow, face }) => ({ who, bow, face })),
+      lastType: type,
+      ...(ROUNDS[type].practice ? { lastPerEnd: perEnd } : {}),
     });
     ui.newArchers = null;
     navigator.storage?.persist?.().catch(() => {});
@@ -357,20 +388,23 @@ function renderScore() {
   if (!round) return go('#/');
   if (round.finishedAt) return location.replace(`#/round/${round.id}`);
 
-  const tpl = ROUNDS[round.type];
+  const tpl = roundSpec(round);
+  const practice = isPractice(round);
   const st = roundStats(round);
   const settings = store.getSettings();
   const mode = settings.showTarget ? settings.defaultEntry : 'keypad';
   const group = store.getGroup(round);
   const endIdx = round.ends.length - 1;
   const end = currentEnd(round);
-  const full = end.length >= tpl.arrowsPerEnd;
-  const lastEnd = endIdx === tpl.ends - 1;
-  const half = Math.floor(endIdx / (tpl.ends / tpl.halves)) + 1;
+  const per = tpl.arrowsPerEnd;
+  const full = endIsFull(round);
+  const done = endIsDone(round);
+  const lastEnd = !practice && endIdx === tpl.ends - 1;
   const endTotal = st.endTotals[endIdx] || 0;
   const labels = allowedLabels(round.bow, round.face);
 
-  const slots = Array.from({ length: tpl.arrowsPerEnd }, (_, i) => {
+  // With no limit per end, there is always one empty box waiting for the next arrow.
+  const slots = Array.from({ length: per || end.length + 1 }, (_, i) => {
     const a = end[i];
     return a
       ? `<button type="button" class="slot filled ${labelClass(a.v)}" data-action="edit-arrow" data-i="${endIdx}" data-k="${i}" aria-label="Change arrow ${i + 1}">${esc(a.v)}</button>`
@@ -378,15 +412,16 @@ function renderScore() {
   }).join('');
 
   const prev = round.ends[endIdx - 1];
+  const where = practice ? '' : `Half ${Math.floor(endIdx / (tpl.ends / tpl.halves)) + 1} · `;
   const prevHtml = prev
     ? `<div class="prev-end">End ${endIdx}: ${sortArrows(prev).map(a => chip(a.v)).join('')} <b>${st.endTotals[endIdx - 1]}</b></div>`
-    : `<div class="prev-end muted">Half ${half} · ${esc(describeConfig(round))}</div>`;
+    : `<div class="prev-end muted">${where}${esc(describeConfig(round))}</div>`;
 
   // With several archers, tabs show whose arrows are being entered; a tick means their end is done.
   const archerTabs = group.length > 1 ? `
     <div class="archer-tabs">${group.map(r => `
       <button type="button" class="archer-tab ${r.id === round.id ? 'on' : ''}" data-action="goto-archer" data-id="${r.id}">
-        <span>${endIsFull(r) ? '✓ ' : ''}${esc(nameOf(r))}</span><b>${roundStats(r).total}</b>
+        <span>${endIsDone(r) ? '✓ ' : ''}${esc(nameOf(r))}</span><b>${roundStats(r).total}</b>
       </button>`).join('')}
     </div>` : (archerOf(round) !== store.ME ? `<div class="solo-name">Scoring <b>${esc(nameOf(round))}</b></div>` : '');
 
@@ -408,19 +443,21 @@ function renderScore() {
 
   // After this archer's end: move on to the next archer still to shoot, then to the next end.
   const seat = group.indexOf(round);
-  const waiting = [...group.slice(seat + 1), ...group.slice(0, seat)].find(r => !endIsFull(r));
+  const waiting = [...group.slice(seat + 1), ...group.slice(0, seat)].find(r => !endIsDone(r));
   let nextBtn;
-  if (!full) nextBtn = `<button type="button" class="btn" disabled>${end.length}/${tpl.arrowsPerEnd} arrows</button>`;
+  if (!done) nextBtn = `<button type="button" class="btn" disabled>${per ? `${end.length}/${per} arrows` : 'No arrows yet'}</button>`;
   else if (waiting) nextBtn = `<button type="button" class="btn primary" data-action="goto-archer" data-id="${waiting.id}">Next: ${esc(nameOf(waiting))} →</button>`;
   else if (lastEnd) nextBtn = '<button type="button" class="btn primary" data-action="finish">Finish round</button>';
   else nextBtn = '<button type="button" class="btn primary" data-action="next-end">Next end →</button>';
 
   app.innerHTML = shell({
-    title: `End ${endIdx + 1} of ${tpl.ends}`,
+    title: practice ? `Practice · End ${endIdx + 1}` : `End ${endIdx + 1} of ${tpl.ends}`,
     back: true,
     nav: false,
     cls: 'score-screen',
-    right: `<a class="icon-btn" href="#/round/${round.id}" aria-label="Scorecard">${ICONS.card}</a>`,
+    // Practice has no last end, so it can be finished at any time.
+    right: (practice ? '<button type="button" class="text-btn" data-action="finish">Finish</button>' : '') +
+      `<a class="icon-btn" href="#/round/${round.id}" aria-label="Scorecard">${ICONS.card}</a>`,
     body: `
       ${archerTabs}
       <div class="stat-strip">
@@ -429,7 +466,7 @@ function renderScore() {
         ${hasX(round.bow) ? `<div><small>Xs</small><b>${st.xs}</b></div>` : ''}
         <div><small>Avg</small><b>${st.avg.toFixed(2)}</b></div>
       </div>
-      <div class="end-row">${slots}<div class="end-total"><small>End</small>${endTotal}</div></div>
+      <div class="end-row ${per ? '' : 'open'}"><div class="slots">${slots}</div><div class="end-total"><small>End</small>${endTotal}</div></div>
       ${prevHtml}
       ${settings.showTarget ? `<div class="mode-tabs">
         <button type="button" data-action="mode" data-m="keypad" class="${mode === 'keypad' ? 'on' : ''}">Keypad</button>
@@ -521,7 +558,20 @@ function nextEnd(round) {
 }
 
 function finishRound(round) {
-  const group = store.getGroup(round);
+  let group = store.getGroup(round);
+  if (isPractice(round)) {
+    if (!confirm('Finish this practice?')) return;
+    // Drop an end that was started but not shot, and anyone who shot nothing at all.
+    for (const r of group) if (r.ends.length > 1 && !currentEnd(r).length) r.ends.pop();
+    const empty = group.filter(r => !r.ends.flat().length);
+    empty.forEach(r => store.deleteRound(r.id));
+    group = group.filter(r => !empty.includes(r));
+    if (!group.length) {
+      location.replace('#/');
+      toast('Nothing was scored, so the practice was not saved');
+      return;
+    }
+  }
   for (const r of group) {
     r.finishedAt = Date.now();
     store.updateRound(r);
@@ -532,7 +582,25 @@ function finishRound(round) {
 
 // ---------- scorecard ----------
 
+// Practice ends can be any size, so each end's arrows share one cell.
+function practiceCardHTML(round) {
+  const st = roundStats(round);
+  const rows = round.ends.map((end, i) => end.length ? `
+    <tr class="editable" data-action="edit-end" data-i="${i}">
+      <td class="end-no">${i + 1}</td>
+      <td class="arrows-cell">${sortArrows(end).map(a => chip(a.v)).join('')}</td>
+      <td class="num">${st.endTotals[i]}</td>
+      <td class="num run">${st.running[i]}</td>
+    </tr>` : '').join('');
+  return `
+    <table class="scorecard">
+      <thead><tr><th>End</th><th>Arrows</th><th>End</th><th>Total</th></tr></thead>
+      <tbody>${rows || '<tr class="blank"><td colspan="4">No arrows yet</td></tr>'}</tbody>
+    </table>`;
+}
+
 function scorecardHTML(round) {
+  if (isPractice(round)) return practiceCardHTML(round);
   const tpl = ROUNDS[round.type];
   const st = roundStats(round);
   const perHalf = tpl.ends / tpl.halves;
@@ -567,6 +635,7 @@ function renderRound() {
   if (!round) return go('#/');
   const st = roundStats(round);
   const tpl = ROUNDS[round.type];
+  const practice = isPractice(round);
   const arrows = round.ends.flat();
   const pts = plotted(arrows);
 
@@ -576,17 +645,24 @@ function renderRound() {
   let banner = '';
   if (ui.justFinished.has(round.id)) {
     ui.justFinished.delete(round.id);
-    const pb = isPersonalBest(round) && store.getRounds().filter(r => r.finishedAt && configKey(r) === configKey(round)).length > 1;
     const who = named ? `${nameOf(round)}: ` : '';
-    banner = `<div class="card banner ${pb ? 'pb' : ''}">${pb ? `🏆 ${esc(who)}new personal best!` : `${esc(who)}round complete!`} <b>${st.total}/${st.maxScore}</b></div>`;
+    if (practice) {
+      banner = `<div class="card banner">${esc(who)}practice saved! <b>${st.arrows} arrows, ${st.avg.toFixed(2)} avg</b></div>`;
+    } else {
+      const pb = isPersonalBest(round) && store.getRounds().filter(r => r.finishedAt && configKey(r) === configKey(round)).length > 1;
+      banner = `<div class="card banner ${pb ? 'pb' : ''}">${pb ? `🏆 ${esc(who)}new personal best!` : `${esc(who)}round complete!`} <b>${st.total}/${st.maxScore}</b></div>`;
+    }
   }
 
-  // Everyone scored in the same session, highest score first, to switch between their cards.
-  const ranked = [...group].sort((a, b) => compareScores(roundStats(a), roundStats(b)));
+  // Everyone scored in the same session, best first, to switch between their cards.
+  // Practice archers may shoot different numbers of arrows, so they're ranked by average.
+  const ranked = [...group].sort((a, b) => practice
+    ? roundStats(b).avg - roundStats(a).avg
+    : compareScores(roundStats(a), roundStats(b)));
   const groupTabs = group.length > 1 ? `
     <div class="archer-tabs">${ranked.map(r => `
       <button type="button" class="archer-tab ${r.id === round.id ? 'on' : ''}" data-action="goto-card" data-id="${r.id}">
-        <span>${esc(nameOf(r))}</span><b>${roundStats(r).total}</b>
+        <span>${esc(nameOf(r))}</span><b>${practice ? roundStats(r).avg.toFixed(2) : roundStats(r).total}</b>
       </button>`).join('')}
     </div>` : '';
 
@@ -606,14 +682,14 @@ function renderRound() {
       ${banner}
       <div class="card totals">
         ${named ? `<div class="card-name">${esc(nameOf(round))}</div>` : ''}
-        <div class="total-big"><b>${st.total}</b><small>/ ${st.maxScore}</small></div>
+        <div class="total-big"><b>${st.total}</b><small>${practice ? ` from ${st.arrows} arrows` : `/ ${st.maxScore}`}</small></div>
         <div class="total-grid">
           <div><small>10s</small><b>${st.tens}</b></div>
           ${hasX(round.bow) ? `<div><small>Xs</small><b>${st.xs}</b></div>` : ''}
           <div><small>Misses</small><b>${st.misses}</b></div>
           <div><small>Avg/arrow</small><b>${st.avg.toFixed(2)}</b></div>
         </div>
-        <div class="muted meta">${esc(fmtDate(round.date))} · ${esc(tpl.name)} · ${esc(describeConfig(round))}${round.location ? ' · ' + esc(round.location) : ''}</div>
+        <div class="muted meta">${esc(fmtDate(round.date))} · ${practice ? '' : esc(tpl.name) + ' · '}${esc(describeConfig(round))}${round.location ? ' · ' + esc(round.location) : ''}</div>
         ${round.notes ? `<p class="notes">${esc(round.notes)}</p>` : ''}
       </div>
       ${round.finishedAt ? '' : `<a class="btn primary block" href="#/score/${round.id}">Continue scoring</a>`}
@@ -629,8 +705,12 @@ function renderRound() {
 
 function shareText(round) {
   const st = roundStats(round);
-  return `${showNames() ? nameOf(round) + ' · ' : ''}${ROUNDS[round.type].name} · ${describeConfig(round)}\n${fmtDate(round.date)}: ${st.total}/${st.maxScore} ` +
-    `(${st.tens}×10${hasX(round.bow) ? `, ${st.xs}X` : ''})`;
+  const who = showNames() ? nameOf(round) + ' · ' : '';
+  const tens = `${st.tens}×10${hasX(round.bow) ? `, ${st.xs}X` : ''}`;
+  if (isPractice(round)) {
+    return `${who}${describeConfig(round)}\n${fmtDate(round.date)}: ${st.total} from ${st.arrows} arrows, ${st.avg.toFixed(2)} avg (${tens})`;
+  }
+  return `${who}${ROUNDS[round.type].name} · ${describeConfig(round)}\n${fmtDate(round.date)}: ${st.total}/${st.maxScore} (${tens})`;
 }
 
 async function share(round) {
@@ -809,20 +889,24 @@ function renderHistory() {
 
 // ---------- stats ----------
 
-function trendSVG(rounds) {
-  const vals = rounds.map(r => roundStats(r).total);
+// Plots each round's total, or for practice its average per arrow (decimals = 2).
+function trendSVG(rounds, value = r => roundStats(r).total, decimals = 0) {
+  const vals = rounds.map(value);
   const W = 340, H = 150, L = 36, R = 10, T = 12, B = 22;
+  const minSpan = decimals ? 0.5 : 10;
+  const step = 10 ** -decimals;
   let min = Math.min(...vals), max = Math.max(...vals);
-  if (max - min < 10) { const mid = (max + min) / 2; min = mid - 5; max = mid + 5; }
+  if (max - min < minSpan) { const mid = (max + min) / 2; min = mid - minSpan / 2; max = mid + minSpan / 2; }
   const pad = (max - min) * 0.1;
-  min = Math.floor(min - pad); max = Math.ceil(max + pad);
+  min = Math.floor((min - pad) / step) * step; max = Math.ceil((max + pad) / step) * step;
+  const fmt = v => v.toFixed(decimals);
   const x = i => L + (vals.length === 1 ? (W - L - R) / 2 : i * (W - L - R) / (vals.length - 1));
   const y = v => T + (max - v) * (H - T - B) / (max - min);
   const best = Math.max(...vals);
-  const grid = [min, Math.round((min + max) / 2), max].map(v =>
-    `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/><text class="axis" x="${L - 6}" y="${y(v) + 4}" text-anchor="end">${v}</text>`).join('');
+  const grid = [min, (min + max) / 2, max].map(v =>
+    `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/><text class="axis" x="${L - 6}" y="${y(v) + 4}" text-anchor="end">${fmt(v)}</text>`).join('');
   const line = vals.length > 1 ? `<polyline class="trend" points="${vals.map((v, i) => `${x(i)},${y(v)}`).join(' ')}"/>` : '';
-  const dots = vals.map((v, i) => `<circle class="${v === best ? 'pt best' : 'pt'}" cx="${x(i)}" cy="${y(v)}" r="${v === best ? 4.5 : 3.2}"><title>${esc(fmtDate(rounds[i].date))}: ${v}</title></circle>`).join('');
+  const dots = vals.map((v, i) => `<circle class="${v === best ? 'pt best' : 'pt'}" cx="${x(i)}" cy="${y(v)}" r="${v === best ? 4.5 : 3.2}"><title>${esc(fmtDate(rounds[i].date))}: ${fmt(v)}</title></circle>`).join('');
   const first = fmtDate(rounds[0].date), last = fmtDate(rounds[rounds.length - 1].date);
   return `<svg class="chart" viewBox="0 0 ${W} ${H}">${grid}${line}${dots}
     <text class="axis" x="${L}" y="${H - 4}">${esc(first)}</text>
@@ -849,15 +933,26 @@ function renderStats() {
   const arrows = rounds.flatMap(r => r.ends.flat());
   const showX = hasX(sample.bow);
 
+  const practice = isPractice(sample);
+  const totalArrows = sum(s => s.arrows);
+  const pct = f => `${totalArrows ? Math.round((sum(f) / totalArrows) * 100) : 0}%`;
   const tile = (label, value) => `<div class="tile"><small>${label}</small><b>${value}</b></div>`;
-  const tiles = [
+  // Practice sessions vary in length, so they're compared per arrow rather than by total.
+  const tiles = (practice ? [
+    tile('Sessions', n),
+    tile('Arrows', totalArrows),
+    tile('Avg/arrow', (sum(s => s.total) / totalArrows).toFixed(2)),
+    tile('Best avg', Math.max(...stats.map(s => s.avg)).toFixed(2)),
+    tile('10s', pct(s => s.tens)),
+    showX ? tile('Xs', pct(s => s.xs)) : tile('Misses', pct(s => s.misses)),
+  ] : [
     tile('Rounds', n),
     tile('Best', `${stats[bestIdx].total}`),
     tile('Average', (sum(s => s.total) / n).toFixed(1)),
-    tile('Avg/arrow', (sum(s => s.total) / sum(s => s.arrows)).toFixed(2)),
+    tile('Avg/arrow', (sum(s => s.total) / totalArrows).toFixed(2)),
     tile('10s/round', (sum(s => s.tens) / n).toFixed(1)),
     showX ? tile('Xs/round', (sum(s => s.xs) / n).toFixed(1)) : tile('Misses/round', (sum(s => s.misses) / n).toFixed(1)),
-  ].join('');
+  ]).join('');
 
   const counts = {};
   for (const a of arrows) counts[a.v] = (counts[a.v] || 0) + 1;
@@ -880,7 +975,7 @@ function renderStats() {
   const pts = plotted(recentArrows);
   const c = groupCentre(recentArrows);
   const plot = pts.length ? `
-    <h2 class="section">Grouping <small class="muted">${n > 1 ? `last ${Math.min(10, n)} rounds` : ''}</small></h2>
+    <h2 class="section">Grouping <small class="muted">${n > 1 ? `last ${Math.min(10, n)} ${practice ? 'sessions' : 'rounds'}` : ''}</small></h2>
     <div class="card plot">${singleSpotSVG(sample.face, pts.map(a => markerSVG(sample.face, a, { cls: 'mk dot', r: 0.4, single: true })).join('') + centreSVG(c))}
     <p class="muted">${pts.length} plotted arrows. ${esc(describeOffset(c))}</p></div>` : '';
 
@@ -896,8 +991,8 @@ function renderStats() {
         ${[...configs].map(([k, label]) => `<option value="${k}" ${k === ui.statsConfig ? 'selected' : ''}>${esc(label)}</option>`).join('')}
       </select>` : `<p class="muted">${esc(describeConfig(sample))}</p>`}
       <div class="tiles">${tiles}</div>
-      <h2 class="section">Score trend</h2>
-      <div class="card">${trendSVG(chrono)}</div>
+      <h2 class="section">${practice ? 'Average per arrow' : 'Score trend'}</h2>
+      <div class="card">${practice ? trendSVG(chrono, r => roundStats(r).avg, 2) : trendSVG(chrono)}</div>
       ${halfHtml}
       <h2 class="section">Where the arrows score</h2>
       <div class="card dist">${dist}</div>

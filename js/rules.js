@@ -3,7 +3,17 @@
 
 export const ROUNDS = {
   wa18: { id: 'wa18', name: 'World Archery 18m', distance: '18m', ends: 20, arrowsPerEnd: 3, halves: 2 },
+  // No set number of ends; each practice round may fix its own arrows per end, or leave it open.
+  practice: { id: 'practice', name: 'Practice', practice: true, ends: null, arrowsPerEnd: null, halves: 1 },
 };
+
+export const isPractice = r => !!ROUNDS[r.type].practice;
+
+// The shape of a particular round: its template, with a practice round's own arrows per end.
+export function roundSpec(round) {
+  const tpl = ROUNDS[round.type];
+  return tpl.practice ? { ...tpl, arrowsPerEnd: round.arrowsPerEnd || null } : tpl;
+}
 
 export const BOWS = { recurve: 'Recurve', compound: 'Compound', barebow: 'Barebow' };
 export const FACES = { full40: '40cm full face', triple40: '40cm triple spot' };
@@ -85,11 +95,11 @@ export function rulesHint(bow, face) {
 export const archerOf = r => r.archerId || 'me';
 // Personal bests and stats are kept separately for each archer, round, bow and face.
 export const configKey = r => `${archerOf(r)}|${r.type}|${r.bow}|${r.face}`;
-export const describeConfig = r => `${BOWS[r.bow]} · ${FACES[r.face]}`;
+export const describeConfig = r => `${isPractice(r) ? 'Practice · ' : ''}${BOWS[r.bow]} · ${FACES[r.face]}`;
 
 export function roundStats(round) {
-  const tpl = ROUNDS[round.type];
-  const perHalf = tpl.ends / tpl.halves;
+  const tpl = roundSpec(round);
+  const perHalf = tpl.ends ? tpl.ends / tpl.halves : Infinity;
   let total = 0, tens = 0, xs = 0, arrows = 0, misses = 0;
   const endTotals = [], running = [], halfTotals = new Array(tpl.halves).fill(0);
   round.ends.forEach((end, i) => {
@@ -107,13 +117,14 @@ export function roundStats(round) {
     const h = Math.min(Math.floor(i / perHalf), tpl.halves - 1);
     halfTotals[h] += t;
   });
-  const maxArrows = tpl.ends * tpl.arrowsPerEnd;
+  // A practice round's "maximum" is just what the arrows shot so far could have scored.
+  const maxArrows = tpl.ends ? tpl.ends * tpl.arrowsPerEnd : arrows;
   return {
     total, tens, xs, arrows, misses, endTotals, running, halfTotals,
     avg: arrows ? total / arrows : 0,
     maxArrows,
     maxScore: maxArrows * 10,
-    complete: arrows >= maxArrows,
+    complete: !!tpl.ends && arrows >= maxArrows,
   };
 }
 
