@@ -1,6 +1,6 @@
 // Offline support: the app's files are cached on first visit so it works at the range without signal.
 // Bump VERSION when the list of files changes.
-const VERSION = 'v2';
+const VERSION = 'v3';
 const CACHE = `archery-${VERSION}`;
 const FILES = [
   './',
@@ -38,7 +38,9 @@ async function networkThenCache(req) {
   const cache = await caches.open(CACHE);
   try {
     const res = await Promise.race([
-      fetch(req),
+      // 'no-cache' makes the browser check with the server instead of reusing its own
+      // copy (GitHub Pages lets browsers reuse files for 10 minutes otherwise).
+      fetch(req, { cache: 'no-cache' }),
       new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), NETWORK_TIMEOUT_MS)),
     ]);
     if (res.ok) cache.put(req, res.clone());
