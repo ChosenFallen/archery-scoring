@@ -5,11 +5,38 @@ import {
 import * as store from './store.js';
 import {
   faceSVG, singleSpotSVG, hitTest, markerSVG, plotted, groupCentre, centreSVG, describeOffset,
-  hasPos, snapToScore,
+  hasPos, snapToScore, markerPos,
 } from './face.js';
 
 // How far above the finger the arrow marker sits while placing it on the target.
 const TOUCH_OFFSET_PX = 56;
+// How close (in screen pixels) a touch must be to an arrow's dot to pick that arrow.
+const GRAB_PX = 22;
+// How far the pointer must travel before a touch counts as a drag rather than a tap.
+const DRAG_PX = 6;
+
+// Converts screen coordinates to the face's centimetre coordinates.
+function toFace(svg, x, y) {
+  const pt = svg.createSVGPoint();
+  pt.x = x;
+  pt.y = y;
+  return pt.matrixTransform(svg.getScreenCTM().inverse());
+}
+// The point an arrow is aimed at: above the finger on touch screens, so it stays visible.
+const aimAt = (svg, e) => toFace(svg, e.clientX, e.clientY - (e.pointerType === 'mouse' ? 0 : TOUCH_OFFSET_PX));
+
+// The plotted arrow nearest to point p, if it's within grabbing distance.
+function arrowNear(svg, face, arrows, p, single) {
+  const reach = GRAB_PX / svg.getScreenCTM().a;
+  let best = null;
+  arrows.forEach((a, k) => {
+    if (!hasPos(a)) return;
+    const m = markerPos(face, a, single);
+    const d = Math.hypot(p.x - m.x, p.y - m.y);
+    if (d <= reach && (!best || d < best.d)) best = { k, d, m };
+  });
+  return best;
+}
 
 const app = document.getElementById('app');
 const modal = document.getElementById('modal');
@@ -446,7 +473,7 @@ function renderScore() {
       `<g id="ghost" class="ghost" style="display:none"><circle class="ghost-ring" r="2.4"/><circle class="ghost-dot" r="${Math.max(settings.arrowDiameterMm / 20, 0.3)}"/></g>`;
     const attrs = 'id="target-svg"';
     entry = `
-      <div class="preview" id="preview">${full ? 'End complete. Tap a score above to adjust it.' : end.length ? 'Place the next arrow, or tap a score to adjust it' : 'Touch and drag to place the arrow'}</div>
+      <div class="preview" id="preview">${full ? 'End complete. Tap an arrow to move or change it.' : end.length ? 'Place the next arrow, or tap one to move it' : 'Touch and drag to place the arrow'}</div>
       <div class="face-wrap" id="face-wrap">${single ? singleSpotSVG(round.face, content, attrs) : faceSVG(round.face, content, attrs)}</div>`;
   } else {
     entry = keypadHTML(labels, 'arrow', full);
@@ -494,39 +521,54 @@ function renderScore() {
   if (mode === 'target') bindTarget(round, full);
 }
 
+// Touch and drag places an arrow. Tapping one of this end's arrows opens it for correcting.
 function bindTarget(round, full) {
   const wrap = $('#face-wrap');
   const svg = $('#target-svg');
   const ghost = $('#ghost');
   const preview = $('#preview');
-  if (!wrap || !svg || full) return;
+  if (!wrap || !svg) return;
   const diameter = store.getSettings().arrowDiameterMm;
+  const single = singleSpotEntry(round);
   let hit = null;
+  // A touch that started on an arrow: { k, x, y, moved }. It becomes a placement once it moves.
+  let tap = null;
 
   const update = e => {
-    const offset = e.pointerType === 'mouse' ? 0 : TOUCH_OFFSET_PX;
-    const pt = svg.createSVGPoint();
-    pt.x = e.clientX;
-    pt.y = e.clientY - offset;
-    const p = pt.matrixTransform(svg.getScreenCTM().inverse());
-    hit = hitTest(round.face, round.bow, p.x, p.y, diameter, singleSpotEntry(round));
+    const p = aimAt(svg, e);
+    hit = hitTest(round.face, round.bow, p.x, p.y, diameter, single);
     ghost.setAttribute('transform', `translate(${p.x} ${p.y})`);
     ghost.style.display = '';
     preview.innerHTML = `Arrow ${currentEnd(round).length + 1}: ${chip(hit.v)} <small>release to place</small>`;
   };
   const cancel = () => {
     hit = null;
+    tap = null;
     ghost.style.display = 'none';
-    preview.textContent = 'Touch and drag to place the arrow';
+    preview.textContent = full ? 'End complete. Tap an arrow to move or change it.' : 'Touch and drag to place the arrow';
   };
 
   wrap.addEventListener('pointerdown', e => {
     e.preventDefault();
     wrap.setPointerCapture(e.pointerId);
-    update(e);
+    const near = arrowNear(svg, round.face, currentEnd(round), toFace(svg, e.clientX, e.clientY), single);
+    if (near) { tap = { k: near.k, x: e.clientX, y: e.clientY }; return; }
+    if (!full) update(e);
   });
-  wrap.addEventListener('pointermove', e => { if (hit) update(e); });
+  wrap.addEventListener('pointermove', e => {
+    if (tap) {
+      if (full || Math.hypot(e.clientX - tap.x, e.clientY - tap.y) < DRAG_PX) return;
+      tap = null;
+    }
+    if (hit || (!full && e.buttons)) update(e);
+  });
   wrap.addEventListener('pointerup', () => {
+    if (tap) {
+      const k = tap.k;
+      cancel();
+      openEdit(round, round.ends.length - 1, k);
+      return;
+    }
     if (!hit) return;
     const a = hit;
     hit = null;
@@ -759,8 +801,54 @@ function editPlotHTML(round, ed) {
   const reach = Math.max(...pts.map(a => Math.hypot(a.x, a.y)));
   const zoom = Math.min(Math.max(reach + 2.5, 6), ringOuter(lowestRing(round.face)) + 1);
   const marks = ed.arrows.map((a, k) =>
-    markerSVG(round.face, a, { label: String(k + 1), single: true, r, cls: k === ed.sel ? 'mk sel' : 'mk' })).join('');
-  return `<div class="edit-plot">${singleSpotSVG(round.face, marks, '', zoom)}</div>`;
+    `<g data-k="${k}">${markerSVG(round.face, a, { label: String(k + 1), single: true, r, cls: k === ed.sel ? 'mk sel' : 'mk' })}</g>`).join('');
+  const ghost = `<g id="edit-ghost" class="ghost" style="display:none"><circle class="ghost-ring" r="${Math.max(r * 2.5, zoom / 8)}"/><circle class="ghost-dot" r="${r}"/></g>`;
+  return `<div class="edit-plot">${singleSpotSVG(round.face, marks + ghost, 'id="edit-svg"', zoom)}</div>`;
+}
+
+// Dragging on the plot moves an arrow and rescores it by where it lands. A drag that starts
+// on an arrow moves that one; anywhere else it moves the selected arrow. Tapping an arrow selects it.
+function bindEditPlot(round, ed) {
+  const svg = $('#edit-svg');
+  if (!svg) return;
+  const ghost = $('#edit-ghost');
+  const diameter = store.getSettings().arrowDiameterMm;
+  let drag = null;
+
+  svg.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    svg.setPointerCapture(e.pointerId);
+    const aim = aimAt(svg, e);
+    const near = arrowNear(svg, round.face, ed.arrows, toFace(svg, e.clientX, e.clientY), true);
+    // Grabbing an arrow keeps it where it is relative to the finger, so it doesn't jump.
+    drag = near
+      ? { k: near.k, near: true, dx: near.m.x - aim.x, dy: near.m.y - aim.y, x: e.clientX, y: e.clientY, hit: null }
+      : { k: ed.sel, near: false, dx: 0, dy: 0, x: e.clientX, y: e.clientY, hit: null };
+  });
+  svg.addEventListener('pointermove', e => {
+    if (!drag) return;
+    if (!drag.hit && Math.hypot(e.clientX - drag.x, e.clientY - drag.y) < DRAG_PX) return;
+    const aim = aimAt(svg, e);
+    const x = aim.x + drag.dx, y = aim.y + drag.dy;
+    drag.hit = hitTest(round.face, round.bow, x, y, diameter, true);
+    svg.querySelector(`[data-k="${drag.k}"]`).style.display = 'none';
+    ghost.setAttribute('transform', `translate(${x} ${y})`);
+    ghost.style.display = '';
+    const slot = modal.querySelector(`[data-action="edit-sel"][data-k="${drag.k}"]`);
+    slot.className = `slot filled ${labelClass(drag.hit.v)} sel`;
+    slot.textContent = drag.hit.v;
+    $('#edit-hint').innerHTML = `Arrow ${drag.k + 1}: ${chip(drag.hit.v)} <small>release to move it here</small>`;
+  });
+  svg.addEventListener('pointerup', () => {
+    if (!drag) return;
+    const { k, hit, near } = drag;
+    drag = null;
+    if (hit) ed.arrows[k] = { ...hit, s: ed.arrows[k].s || 0 };
+    else if (!near) return;
+    ed.sel = k;
+    renderModal();
+  });
+  svg.addEventListener('pointercancel', () => { drag = null; renderModal(); });
 }
 
 function closeModal() {
@@ -779,7 +867,7 @@ function renderModal() {
   modal.innerHTML = `
     <div class="sheet" role="dialog" aria-label="Edit end">
       <h2>Edit end ${ed.i + 1}</h2>
-      <p class="muted">Tap an arrow, then its correct score.${ed.arrows.some(hasPos) ? ' Plotted arrows move into the ring you pick.' : ''}</p>
+      <p class="muted" id="edit-hint">Tap an arrow, then its correct score.${ed.arrows.some(hasPos) ? ' Plotted arrows move into the ring you pick, or drag one on the target to move it.' : ''}</p>
       <div class="end-row">${ed.arrows.map((a, k) => `
         <button type="button" class="slot filled ${labelClass(a.v)} ${k === ed.sel ? 'sel' : ''}" data-action="edit-sel" data-k="${k}">${esc(a.v)}</button>`).join('')}
       </div>
@@ -790,6 +878,7 @@ function renderModal() {
         <button type="button" class="btn primary" data-action="edit-save">Save</button>
       </div>
     </div>`;
+  bindEditPlot(round, ed);
 }
 
 // ---------- backup code (clipboard) ----------

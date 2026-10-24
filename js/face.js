@@ -87,11 +87,15 @@ export function snapToScore(a, bow, face, label, arrowDiameterMm) {
 }
 export const plotted = arrows => arrows.filter(hasPos);
 
-// Marker for an arrow on the full face (positions are stored relative to their spot).
+// Where an arrow sits on the drawn face (positions are stored relative to their spot).
+export function markerPos(face, a, single = false) {
+  const p = single ? { x: 0, y: 0 } : geometry(face).spots[a.s || 0] || { x: 0, y: 0 };
+  return { x: p.x + a.x, y: p.y + a.y };
+}
+
 export function markerSVG(face, a, { label = '', cls = 'mk', r = 0.7, single = false } = {}) {
   if (!hasPos(a)) return '';
-  const p = single ? { x: 0, y: 0 } : geometry(face).spots[a.s || 0] || { x: 0, y: 0 };
-  const x = p.x + a.x, y = p.y + a.y;
+  const { x, y } = markerPos(face, a, single);
   // Labels sit beside the marker so the marker itself can be drawn at true arrow size.
   const text = label ? `<text x="${x + r + 0.25}" y="${y - r - 0.15}" font-size="1.5">${label}</text>` : '';
   return `<g class="${cls}"><circle cx="${x}" cy="${y}" r="${r}"/>${text}</g>`;
