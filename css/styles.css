@@ -160,6 +160,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   border: 1px solid var(--line); border-radius: 12px; background: var(--surface);
 }
 .form.card .field input, .form.card .field select { background: var(--bg); }
+.field select:disabled { background: var(--surface-2); color: var(--muted); opacity: 1; }
 
 .segmented { display: flex; background: var(--surface-2); border-radius: 12px; padding: 4px; gap: 4px; }
 .segmented label { flex: 1; }

@@ -291,7 +291,7 @@ function renderNew() {
   const lastType = ROUNDS[s.lastType] ? s.lastType : 'wa18';
   const roundLabel = t => (t.practice ? `${t.name} · no set length` : `${t.name} · ${t.ends * t.arrowsPerEnd} arrows`);
   const perEndOptions = ['', ...Array.from({ length: 12 }, (_, i) => String(i + 1))]
-    .map(v => `<option value="${v}" ${v === String(s.lastPerEnd || '') ? 'selected' : ''}>${v ? `${v} arrow${v === '1' ? '' : 's'}` : 'No limit'}</option>`).join('');
+    .map(v => `<option value="${v}">${v ? `${v} arrow${v === '1' ? '' : 's'}` : 'No limit'}</option>`).join('');
 
   app.innerHTML = shell({
     title: 'New round',
@@ -303,10 +303,10 @@ function renderNew() {
           <span class="field-label">Round</span>
           <select name="type">${Object.values(ROUNDS).map(t => `<option value="${t.id}" ${t.id === lastType ? 'selected' : ''}>${esc(roundLabel(t))}</option>`).join('')}</select>
         </div>
-        <label class="field" id="per-end-field" ${ROUNDS[lastType].practice ? '' : 'hidden'}>
+        <label class="field">
           <span class="field-label">Arrows per end</span>
           <select name="perEnd">${perEndOptions}</select>
-          <small class="muted">With no limit, you choose when each end is over. Finish the practice whenever you're done.</small>
+          <small class="muted" id="per-end-note"></small>
         </label>
         <div class="field">
           <span class="field-label">Archers</span>
@@ -338,9 +338,20 @@ function renderNew() {
   };
   archers.addEventListener('change', onArcherInput);
   archers.addEventListener('input', onArcherInput);
-  form.elements.type.addEventListener('change', e => {
-    $('#per-end-field').hidden = !ROUNDS[e.target.value].practice;
-  });
+  // A tournament round sets its own arrows per end; practice keeps whatever was last chosen.
+  const perEnd = form.elements.perEnd;
+  let practicePerEnd = String(s.lastPerEnd || '');
+  const syncPerEnd = type => {
+    const t = ROUNDS[type];
+    perEnd.disabled = !t.practice;
+    perEnd.value = t.practice ? practicePerEnd : String(t.arrowsPerEnd);
+    $('#per-end-note').textContent = t.practice
+      ? "With no limit, you choose when each end is over. Finish the practice whenever you're done."
+      : `Set by the ${t.name} rules.`;
+  };
+  syncPerEnd(lastType);
+  perEnd.addEventListener('change', () => { practicePerEnd = perEnd.value; });
+  form.elements.type.addEventListener('change', e => syncPerEnd(e.target.value));
 
   form.addEventListener('submit', e => {
     e.preventDefault();
